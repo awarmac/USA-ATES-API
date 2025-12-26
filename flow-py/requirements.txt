@@ -1,0 +1,4 @@
+GDAL 
+numpy
+pyqt5
+rasterio
