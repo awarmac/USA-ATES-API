@@ -1,0 +1,23 @@
+{
+  "name": "ates-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Map frontend for the USA ATES API (modeled terrain, not an avalanche forecast).",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "preview": "vite preview",
+    "check-pmtiles": "node scripts/check-pmtiles.mjs"
+  },
+  "dependencies": {
+    "maplibre-gl": "^6.11.2",
+    "pmtiles": "^4.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}

@@ -9,3 +9,7 @@ __pycache__/
 
 # Region builds (large, regenerable with `ates build-region`)
 /data/
+
+# Frontend dependencies and build output
+/web/node_modules/
+/web/dist/

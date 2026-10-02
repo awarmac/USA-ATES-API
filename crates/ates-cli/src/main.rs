@@ -10,6 +10,8 @@
 //!   DEM and forest data, written as Cloud-Optimized GeoTIFFs.
 //! - `sample`: read a raster (e.g. a region build) at one point.
 //! - `route`: evaluate a GPX or GeoJSON route against a region build.
+//! - `build-tiles`: render a region build's classes as web map tiles
+//!   (PMTiles of lossless WebP).
 //! - `check-slope`: compare our slope/aspect with GDAL's gdaldem.
 
 use std::error::Error;
@@ -28,6 +30,7 @@ use ates_io::{Band, GridSource, Projector, RasterSink, RasterSource, WindowReque
 use ates_pipeline::config::ForestTypeName;
 use ates_pipeline::region::{INITIAL_PAD_M, RegionSources, build_region};
 use ates_pipeline::route::{ATES_CLASS_NAMES, RegionGrids, evaluate_route, report_geojson};
+use ates_pipeline::tiles::{default_zooms, grid_bounds_wgs84, render_ates_tiles};
 use ates_pipeline::{
     AutoAtesInputs, Config, Params, compare, point, provenance, run_autoates, run_flowpy, run_pra,
     terrain,
@@ -86,6 +89,9 @@ enum Command {
     /// Evaluate a route (GPX or GeoJSON) against a region build: length in
     /// each ATES class, and stretches with their terrain context.
     Route(RouteArgs),
+    /// Render a region build's ATES classes as web map tiles: a PMTiles
+    /// archive of lossless WebP tiles (`ates.pmtiles` in the build).
+    BuildTiles(BuildTilesArgs),
     /// Print the value of every band of a raster at one point.
     Sample {
         /// Raster to read (any GDAL path).
@@ -221,6 +227,22 @@ struct BuildRegionArgs {
     /// Config file.
     #[arg(long, default_value = "config/default.toml")]
     config: PathBuf,
+}
+
+#[derive(Args)]
+struct BuildTilesArgs {
+    /// Region whose build to use (reads data/regions/<region>).
+    #[arg(long, required_unless_present = "region_dir")]
+    region: Option<String>,
+    /// Region build directory (overrides --region).
+    #[arg(long)]
+    region_dir: Option<PathBuf>,
+    /// Lowest zoom (default: four below the highest).
+    #[arg(long)]
+    min_zoom: Option<u8>,
+    /// Highest zoom (default: the zoom matching the grid's resolution).
+    #[arg(long)]
+    max_zoom: Option<u8>,
 }
 
 #[derive(Args)]
@@ -752,6 +774,7 @@ fn run_build_region(a: &BuildRegionArgs) -> Result<(), Box<dyn Error>> {
         timings = timings.join("\n"),
     );
     std::fs::write(out_dir.join("manifest.toml"), manifest)?;
+    write_region_tiles(&out_dir, None, None)?;
     eprintln!(
         "wrote {} in {:.0} s: {}x{} cells, cells per class 0-4 {:?}, nodata {} - {}",
         out_dir.display(),
@@ -885,6 +908,107 @@ fn run_route(a: &RouteArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Render `dir/ates.tif` into `dir/ates.pmtiles`.
+fn write_region_tiles(
+    dir: &Path,
+    min_zoom: Option<u8>,
+    max_zoom: Option<u8>,
+) -> Result<(), Box<dyn Error>> {
+    use ates_core::tiles::ATES_COLORS;
+    use ates_io::pmtiles::{PmTilesInfo, TileType, write_pmtiles};
+
+    let started = std::time::Instant::now();
+    let ates = read_grid(&dir.join("ates.tif"))?;
+    let ates = Grid {
+        data: ates
+            .data
+            .mapv(|v| if v.is_nan() { -9999 } else { v as i16 }),
+        transform: ates.transform,
+        crs: ates.crs,
+        nodata: ates.nodata,
+    };
+    let bounds = grid_bounds_wgs84(&ates, &GdalProjector)?;
+    let defaults = default_zooms(&ates, bounds);
+    let zmax = max_zoom.unwrap_or(*defaults.end());
+    let zmin = min_zoom.unwrap_or(*defaults.start()).min(zmax);
+    let rendered = render_ates_tiles(&ates, bounds, zmin..=zmax, &GdalProjector)?;
+    let mut tiles = Vec::with_capacity(rendered.len());
+    let mut raw = 0;
+    for t in rendered {
+        raw += t.rgba.len();
+        let webp = ates_io::gdal_backend::encode_webp_lossless(
+            &t.rgba,
+            ates_core::tiles::TILE_SIZE,
+            ates_core::tiles::TILE_SIZE,
+        )?;
+        tiles.push((t.z, t.x, t.y, webp));
+    }
+
+    let manifest = std::fs::read_to_string(dir.join("manifest.toml"))
+        .ok()
+        .and_then(|t| t.parse::<toml::Table>().ok());
+    let get = |k: &str| {
+        manifest
+            .as_ref()
+            .and_then(|m| m.get(k))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("region")
+        .to_owned();
+    let legend: Vec<serde_json::Value> = (0..5)
+        .map(|c| {
+            serde_json::json!({
+                "class": c,
+                "name": ATES_CLASS_NAMES[c],
+                "rgba": ATES_COLORS[c],
+            })
+        })
+        .collect();
+    let attribution = format!(
+        "ATES classes modelled with an AutoATES v2.0 port; DEM: {}; forest: {}",
+        get("dem_source").unwrap_or_else(|| "see manifest".into()),
+        get("forest_source").unwrap_or_else(|| "see manifest".into()),
+    );
+    let info = PmTilesInfo {
+        tile_type: TileType::Webp,
+        bounds,
+        center: (
+            (bounds[0] + bounds[2]) / 2.0,
+            (bounds[1] + bounds[3]) / 2.0,
+            zmin + 1,
+        ),
+        metadata: serde_json::json!({
+            "name": format!("{name} ATES"),
+            "description": "Modeled ATES terrain classes 0-4 (overlay).",
+            "attribution": attribution,
+            "type": "overlay",
+            "format": "webp",
+            "minzoom": zmin,
+            "maxzoom": zmax,
+            "legend": legend,
+            "disclaimer": ates_io::DISCLAIMER,
+            "tool_version": ates_pipeline::TOOL_VERSION,
+            "config_fnv1a64": get("config_fnv1a64"),
+        }),
+    };
+    let archive = write_pmtiles(&tiles, &info)?;
+    let out = dir.join("ates.pmtiles");
+    std::fs::write(&out, &archive)?;
+    eprintln!(
+        "wrote {}: {} tiles, zoom {zmin}-{zmax}, {} KB (raw RGBA {} KB) in {:.1} s",
+        out.display(),
+        tiles.len(),
+        archive.len() / 1024,
+        raw / 1024,
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
 fn run_sample(raster: &Path, center: BBox) -> Result<(), Box<dyn Error>> {
     let (lon, lat) = center.center();
     let first = read_grid(raster)?;
@@ -948,6 +1072,14 @@ fn main() -> ExitCode {
         Command::BuildRegion(a) => run_build_region(a).map(|()| true),
         Command::Sample { raster, center } => run_sample(raster, *center).map(|()| true),
         Command::Route(a) => run_route(a).map(|()| true),
+        Command::BuildTiles(a) => {
+            let dir = match (&a.region_dir, &a.region) {
+                (Some(d), _) => d.clone(),
+                (None, Some(r)) => Path::new("data/regions").join(r),
+                (None, None) => unreachable!("clap requires --region or --region-dir"),
+            };
+            write_region_tiles(&dir, a.min_zoom, a.max_zoom).map(|()| true)
+        }
         Command::CheckSlope {
             common,
             tolerance_deg,

@@ -1,0 +1,185 @@
+:root {
+  --panel-bg: rgba(255, 255, 255, 0.96);
+  --text: #1d1d1f;
+  --muted: #5f6368;
+  --accent: #0b57d0;
+  --warn-bg: #fff4e5;
+  --warn-border: #f0a14a;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  color: var(--text);
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+#panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: min(340px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  background: var(--panel-bg);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  font-size: 14px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 15px;
+  margin: 12px 0 6px;
+}
+
+h3 {
+  font-size: 13px;
+  margin: 10px 0 4px;
+}
+
+.tag {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  padding: 1px 4px;
+  vertical-align: middle;
+}
+
+.disclaimer {
+  background: var(--warn-bg);
+  border-left: 4px solid var(--warn-border);
+  padding: 6px 8px;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+select,
+button,
+.upload {
+  font: inherit;
+  font-size: 13px;
+}
+
+.legend {
+  margin: 6px 0;
+}
+
+.legend-row,
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0;
+}
+
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  flex: none;
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+
+button,
+.upload {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #fff;
+  color: var(--accent);
+}
+
+.upload {
+  position: relative;
+  overflow: hidden;
+}
+
+.upload input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.stretch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 3px 0;
+  text-align: left;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid #ddd;
+}
+
+.fine {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.popup table {
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.popup td {
+  padding: 1px 8px 1px 0;
+}
+
+.popup td:last-child {
+  font-weight: 600;
+}
+
+@media (max-width: 600px) {
+  #panel {
+    top: auto;
+    bottom: 12px;
+    max-height: 45vh;
+  }
+}

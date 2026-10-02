@@ -56,11 +56,12 @@ crates/
                         classify.rs (trait, slope bands), autoates.rs (AutoATES rules),
                         pra.rs (AutoATES PRA), sieve.rs (GDALSieveFilter port),
                         flowpy.rs (Flow-Py runout, rayon), overhead.rs,
-                        route.rs (route evaluation)
+                        route.rs (route evaluation), area.rs, tiles.rs (web tiles)
   ates-io/              raster traits, GDAL backend (feature "gdal"), provenance
   ates-pipeline/        config loading/merging, orchestration, comparison helper
   ates-cli/             `ates` binary (clap)
   ates-api/             `ates-api` HTTP server (axum) over region builds
+web/                    map frontend: TypeScript + Vite + MapLibre GL + pmtiles
 tests/fixtures/         small DEM clips + reference outputs (see their READMEs);
                         bow_summit/autoates/ = AutoATES inputs and every intermediate output
                         autoates_pra/ = clipped AutoATES PRA inputs and outputs
@@ -83,7 +84,7 @@ api/                    empty Python placeholders; left untouched. The API is cr
 | 2 | Removed the placeholder `terrain/` crate and its committed build artefacts, and added `.gitignore` | It was `cargo new` boilerplate and would have been a stray crate inside the root workspace. |
 | 3 | **GPL-3.0-or-later** for all crates, with `LICENSE` at the root | Flow-Py and AutoATES are GPL-3.0, and we port their algorithms. |
 | 4 | **Oracle = upstream AutoATES-v2.0 at commit `3afcb49ae8c8a2385666f6fb4b999c69c82b1e83`** (2023-10-31), not `flow-py/` | The local copy is incomplete: `raster_io`, `Simulation` and `Flow_GUI` are missing, and it is modified. |
-| 5 | CLI commands are `point`, `area` (which replaced M1's `terrain`), `pra`, `flowpy`, `classify`, `build-region`, `sample`, `route` and `check-slope`. `route` comes with route evaluation. | `area` writes the same slope/aspect plus the proxy class band. |
+| 5 | CLI commands are `point`, `area` (which replaced M1's `terrain`), `pra`, `flowpy`, `classify`, `build-region`, `build-tiles`, `sample`, `route` and `check-slope`. `route` comes with route evaluation. | `area` writes the same slope/aspect plus the proxy class band. |
 | 6 | `ates-pipeline` currently holds config, provenance and the terrain path. Tiling and caching come in M6. Remote DEM fetching comes in M2 or M3. | Keeps M1 small. |
 | 7 | Config holds only **cited** scientific values. The AutoATES classifier defaults carry file and line citations. `prep.pad_m` is still TODO, and the CLI must supply it. | Working agreement: values come from the paper or the reference repo, with a citation. |
 | 8 | Slope and aspect replicate gdaldem exactly, including `-compute_edges` extrapolation | It makes "match gdaldem" a strict, testable property. |
@@ -111,6 +112,10 @@ api/                    empty Python placeholders; left untouched. The API is cr
 | 30 | **`axum`, `tokio`, `tower-http`** for the HTTP API | Approved for Increment 7. |
 | 31 | The API **loads region builds into memory at startup** and never computes ATES per request. Aspect and slope are precomputed once. | Cameron Pass is about 1.9 M cells per layer, so memory is modest. Route requests take about 5 ms instead of 400 ms. Tiled COG window reads can replace this for large regions (Increment 10). |
 | 32 | **CORS allows any origin** (GET/POST, `content-type`) | So a local frontend dev server can call it. Tighten before any public deployment. |
+| 33 | The map overlay is a **PMTiles archive of lossless WebP raster tiles** | Your choice (Increment 8). One static file that the browser reads with range requests, loading only the visible tiles; it scales to large regions. Cameron Pass is 93 tiles, 93 KB in total. |
+| 34 | PMTiles and tile rendering are **written in-house**: `ates_io::pmtiles` (writer), `ates_pipeline::tiles` (nearest-neighbour rendering), and WebP through GDAL's driver | No new Rust dependencies. The archive is validated with the reference `pmtiles` JS library (`web/scripts/check-pmtiles.mjs`). Only a root directory is written, which holds a few thousand tiles; larger pyramids need leaf directories. |
+| 35 | Frontend: **plain TypeScript + Vite + MapLibre GL + pmtiles** in `web/`, with the USGS Topo basemap (public domain) | Your choice (Increment 8). In development, Vite proxies `/v1`; in production, `ates-api --web-dir web/dist` serves it, so everything shares one origin. |
+| 36 | Overlay colours: class 1 green, 2 blue, 3 black, 4 red, semi-transparent; class 0 transparent | Classes 1–3 follow the usual ATES map convention; red for class 4 is our choice. The legend lives in the PMTiles metadata, so the frontend never hard-codes it. |
 
 ## Terrain (Milestone 1)
 
@@ -408,6 +413,47 @@ Smoke test against the real Cameron Pass build, 2026-10-02:
 - A `Range: bytes=0-1023` request on `ates.tif` returns 206.
 - The CORS preflight from `localhost:5173` is allowed.
 
+## Web map (Increment 8)
+
+```
+ates build-tiles --region cameron_pass [--min-zoom Z] [--max-zoom Z]   # also run by build-region
+ates-api --data-dir data/regions --web-dir web/dist                     # http://127.0.0.1:8080
+```
+
+**Tiles.** `ates build-tiles` builds `ates.pmtiles` from `ates.tif` in three steps:
+1. **Render.** `ates_pipeline::tiles` renders 256-pixel Web Mercator tiles in parallel. Each pixel takes the class of the grid cell under its centre: nearest neighbour, so classes are never blended.
+2. **Encode.** Tiles are encoded as lossless WebP through GDAL. Empty tiles are skipped.
+3. **Pack.** `ates_io::pmtiles` writes PMTiles v3. Identical tiles are stored once, and runs share an entry.
+
+The zoom range is chosen automatically:
+- **Highest zoom:** the first one whose pixels are no larger than the grid cell (z14 for 10 m at 40.5° N).
+- **Lowest zoom:** four levels below that.
+
+MapLibre overzooms beyond that with `raster-resampling: nearest`.
+
+The archive metadata carries the legend (class names and RGBA), the attribution, the disclaimer, the tool version and the config fingerprint.
+
+Cameron Pass, 2026-10-02:
+- 93 tiles at z10–14, 93 KB in total (the raw RGBA would be 23.8 MB);
+- rendered and encoded in 1.0 s.
+
+The reference `pmtiles` library (v4.5) reads the header, the metadata and all 93 tiles as WebP (`npm run check-pmtiles`).
+
+**Frontend** (`web/`, see `web/README.md`). A MapLibre map over the USGS Topo basemap, with the ATES overlay from PMTiles:
+- an opacity slider, and a legend read from the tile metadata;
+- click for a point popup (`/v1/point`);
+- draw a route or upload GPX/GeoJSON to get the route panel (`/v1/route/evaluate`). The panel shows km per class, release-area and avalanche-path length, and a clickable list of class 3–4 stretches. The route line is drawn coloured by class.
+
+The disclaimer is always visible, and repeated in popups and route results.
+
+`src/api.ts` mirrors `ates-api`'s types. The production bundle is 289 KB gzipped JS, almost all of it MapLibre.
+
+Checked:
+- `tsc --noEmit` and `vite build` are clean, and `npm audit` reports 0 vulnerabilities.
+- `ates-api --web-dir web/dist` serves the page and its bundle, plus range reads of `ates.pmtiles` (206).
+
+The UI has not yet been checked in a browser by the tooling; that is a manual step.
+
 ## Provenance
 
 GeoTIFF dataset metadata:
@@ -536,4 +582,5 @@ Without GDAL at all, on CI or another machine:
 6. **Cameron Pass end to end** — done (Increment 5). `ates build-region` produces Cloud-Optimized GeoTIFF ATES classes from 3DEP and USFS canopy cover in about 1 minute, and `ates sample` reads them at a point. Parameters are not yet validated for Colorado.
 7. **Route evaluation** — done (Increment 6). `ates route` gives GPX or GeoJSON in, a terminal summary, and a GeoJSON report out.
 8. **HTTP API** — done (Increment 7). `ates-api` serves regions, points, areas, route evaluation and the COGs.
-9. Next: the frontend MVP (Increment 8), CAIC forecast context (9), and scaling beyond one window (10).
+9. **Frontend MVP** — done (Increment 8). PMTiles WebP overlay, point popups, route drawing and upload.
+10. Next: CAIC forecast context (Increment 9) and scaling beyond one window (10).

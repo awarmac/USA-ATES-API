@@ -4,6 +4,7 @@
 //! traits so the GDAL backend (feature `gdal`, on by default) can later be
 //! joined by a pure-Rust one.
 
+pub mod pmtiles;
 pub mod provenance;
 pub mod raster;
 pub mod route_file;

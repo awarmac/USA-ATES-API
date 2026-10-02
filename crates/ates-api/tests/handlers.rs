@@ -58,6 +58,7 @@ fn state() -> Arc<AppState> {
     Arc::new(AppState {
         regions: vec![region],
         data_dir: PathBuf::from("does-not-exist"),
+        web_dir: None,
     })
 }
 

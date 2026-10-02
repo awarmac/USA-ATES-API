@@ -12,6 +12,7 @@ pub mod pra;
 pub mod route;
 pub mod sieve;
 pub mod terrain;
+pub mod tiles;
 
 pub use crs::{BBox, Crs};
 pub use grid::{GeoTransform, Grid, GridError};

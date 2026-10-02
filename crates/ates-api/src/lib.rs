@@ -10,7 +10,8 @@
 //! | GET | `/v1/point` | `lon`, `lat`, optional `region` | layers at the point |
 //! | POST | `/v1/area` | GeoJSON (Multi)Polygon; optional `?region=` | area per class |
 //! | POST | `/v1/route/evaluate` | GeoJSON line or GPX; optional `?region=` | GeoJSON report |
-//! | GET | `/v1/files/{region}/{layer}.tif` | | Cloud-Optimized GeoTIFFs (range requests) |
+//! | GET | `/v1/files/{region}/{file}` | | the build's COGs and `ates.pmtiles` map tiles (range requests) |
+//! | GET | `/` | | the built frontend, with `--web-dir` |
 //!
 //! Every JSON response states that results are a modeled terrain
 //! classification, not an avalanche forecast. CORS allows any origin for
@@ -55,6 +56,8 @@ pub struct AppState {
     /// Directory the region builds were loaded from (served under
     /// `/v1/files`).
     pub data_dir: PathBuf,
+    /// Built frontend (`web/dist`) served at `/`, if any.
+    pub web_dir: Option<PathBuf>,
 }
 
 /// An error with an HTTP status, returned as JSON.
@@ -99,19 +102,24 @@ type ApiResult<T> = Result<T, ApiError>;
 
 /// The application router.
 pub fn router(state: Arc<AppState>) -> Router {
+    // Range and the response headers PMTiles clients read, so map tiles
+    // also load cross-origin.
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([header::CONTENT_TYPE]);
-    Router::new()
+        .allow_methods([Method::GET, Method::HEAD, Method::POST])
+        .allow_headers([header::CONTENT_TYPE, header::RANGE, header::IF_MATCH])
+        .expose_headers([header::CONTENT_RANGE, header::CONTENT_LENGTH, header::ETAG]);
+    let mut app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/regions", get(list_regions))
         .route("/v1/point", get(point))
         .route("/v1/area", post(area))
         .route("/v1/route/evaluate", post(route_evaluate))
-        .nest_service("/v1/files", ServeDir::new(&state.data_dir))
-        .layer(cors)
-        .with_state(state)
+        .nest_service("/v1/files", ServeDir::new(&state.data_dir));
+    if let Some(web) = &state.web_dir {
+        app = app.fallback_service(ServeDir::new(web));
+    }
+    app.layer(cors).with_state(state)
 }
 
 fn provenance(region: &Region) -> Provenance {
@@ -142,23 +150,19 @@ pub async fn list_regions(State(state): State<Arc<AppState>>) -> ApiResult<Json<
             }
         }
         let mut files = Vec::new();
-        for layer in [
-            "ates",
-            "dem",
-            "forest",
-            "pra",
-            "fp_travel_angle",
-            "overhead",
-            "cell_counts",
-            "z_delta",
+        for file in [
+            "ates.pmtiles",
+            "ates.tif",
+            "dem.tif",
+            "forest.tif",
+            "pra.tif",
+            "fp_travel_angle.tif",
+            "overhead.tif",
+            "cell_counts.tif",
+            "z_delta.tif",
         ] {
-            if state
-                .data_dir
-                .join(&r.name)
-                .join(format!("{layer}.tif"))
-                .exists()
-            {
-                files.push(format!("/v1/files/{}/{layer}.tif", r.name));
+            if state.data_dir.join(&r.name).join(file).exists() {
+                files.push(format!("/v1/files/{}/{file}", r.name));
             }
         }
         out.push(RegionInfo {

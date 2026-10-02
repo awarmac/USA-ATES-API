@@ -26,6 +26,9 @@ struct Args {
     /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
+    /// Serve the built frontend (e.g. web/dist) at `/`.
+    #[arg(long)]
+    web_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -57,6 +60,7 @@ async fn main() -> ExitCode {
     let state = Arc::new(AppState {
         regions,
         data_dir: args.data_dir,
+        web_dir: args.web_dir,
     });
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
         Ok(l) => l,

@@ -16,6 +16,7 @@
 pub mod config;
 pub mod region;
 pub mod route;
+pub mod tiles;
 
 use ates_core::autoates::{self, AutoAtesLayers, FillNodata, OutputMode};
 use ates_core::classify::{ClassifyError, TerrainLayers, slope_classes};

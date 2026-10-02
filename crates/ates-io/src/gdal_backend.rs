@@ -454,6 +454,44 @@ pub fn read_grid(path: &Path) -> Result<Grid<f32>, IoError> {
     band_to_grid(&ds, 1, crs)
 }
 
+/// Encode an RGBA image (row-major, 4 bytes per pixel) as lossless WebP,
+/// through GDAL's WEBP driver and an in-memory file. Fully transparent
+/// pixels may lose their (invisible) colour, as libwebp does by default.
+pub fn encode_webp_lossless(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, IoError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    if rgba.len() != width * height * 4 {
+        return Err(IoError::Invalid(format!(
+            "RGBA buffer has {} bytes, expected {}",
+            rgba.len(),
+            width * height * 4
+        )));
+    }
+    let mem = DriverManager::get_driver_by_name("MEM")?
+        .create_with_band_type::<u8, _>("", width, height, 4)?;
+    for b in 0..4 {
+        let plane: Vec<u8> = rgba.iter().skip(b).step_by(4).copied().collect();
+        let mut band = mem.rasterband(b + 1)?;
+        band.write(
+            (0, 0),
+            (width, height),
+            &mut Buffer::new((width, height), plane),
+        )?;
+    }
+    let name = format!(
+        "/vsimem/ates_tile_{}.webp",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut opts = RasterCreationOptions::new();
+    opts.set_name_value("LOSSLESS", "TRUE")?;
+    let out = mem.create_copy(&DriverManager::get_driver_by_name("WEBP")?, &name, &opts)?;
+    drop(out);
+    let bytes = gdal::vsi::get_vsi_mem_file_bytes_owned(&name)?;
+    // GDAL may add a sidecar for metadata; remove it if present.
+    let _ = gdal::vsi::unlink_mem_file(format!("{name}.aux.xml"));
+    Ok(bytes)
+}
+
 /// Every band's description and value at (`row`, `col`) of a raster file.
 pub fn read_bands_at(path: &Path, row: usize, col: usize) -> Result<Vec<(String, f64)>, IoError> {
     let ds = Dataset::open(path)?;
@@ -532,6 +570,39 @@ fn band_to_grid(ds: &Dataset, index: usize, crs: Crs) -> Result<Grid<f32>, IoErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webp_lossless_round_trip() {
+        let rgba: Vec<u8> = (0..16 * 8)
+            .flat_map(|i| [i as u8, 7, 200, (i % 3) as u8 * 100])
+            .collect();
+        let webp = encode_webp_lossless(&rgba, 16, 8).unwrap();
+        assert_eq!(&webp[..4], b"RIFF");
+        assert_eq!(&webp[8..12], b"WEBP");
+        // Decode with GDAL. Lossless keeps alpha everywhere and colour
+        // wherever alpha > 0; libwebp drops the colour of fully
+        // transparent pixels, which an overlay never shows.
+        let name = "/vsimem/webp_round_trip.webp";
+        gdal::vsi::create_mem_file(name, webp).unwrap();
+        let ds = Dataset::open(name).unwrap();
+        assert_eq!(ds.raster_count(), 4);
+        let planes: Vec<Vec<u8>> = (1..=4)
+            .map(|b| {
+                let band = ds.rasterband(b).unwrap();
+                band.read_band_as::<u8>().unwrap().into_shape_and_vec().1
+            })
+            .collect();
+        for (i, px) in rgba.chunks_exact(4).enumerate() {
+            assert_eq!(planes[3][i], px[3], "alpha at {i}");
+            if px[3] > 0 {
+                let got = [planes[0][i], planes[1][i], planes[2][i]];
+                assert_eq!(got, [px[0], px[1], px[2]], "colour at {i}");
+            }
+        }
+        drop(ds);
+        gdal::vsi::unlink_mem_file(name).unwrap();
+        assert!(encode_webp_lossless(&rgba, 16, 9).is_err());
+    }
 
     #[test]
     fn image_server_url_targets_the_grid() {

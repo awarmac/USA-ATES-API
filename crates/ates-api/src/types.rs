@@ -35,7 +35,8 @@ pub struct RegionInfo {
     pub cols: usize,
     /// Cells per ATES class 0-4.
     pub cells_per_class: [usize; 5],
-    /// URLs of the build's Cloud-Optimized GeoTIFFs, relative to the API.
+    /// URLs of the build's files (`ates.pmtiles` map tiles and the
+    /// Cloud-Optimized GeoTIFFs), relative to the API.
     pub files: Vec<String>,
     /// The build manifest (parameters, data sources), as JSON.
     pub manifest: Value,

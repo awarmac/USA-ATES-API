@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ATES terrain map (modeled)</title>
+  </head>
+  <body>
+    <div id="map"></div>
+    <aside id="panel">
+      <h1>ATES terrain <span class="tag">modeled</span></h1>
+      <p id="disclaimer" class="disclaimer">
+        Modeled terrain classification, not an avalanche forecast.
+      </p>
+      <label class="field">
+        Region
+        <select id="region"></select>
+      </label>
+      <div id="legend" class="legend"></div>
+      <label class="field">
+        Overlay opacity
+        <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.85" />
+      </label>
+      <div class="tools">
+        <button id="draw" type="button">Draw route</button>
+        <label class="upload">
+          Upload GPX / GeoJSON
+          <input id="upload" type="file" accept=".gpx,.geojson,.json" />
+        </label>
+        <button id="clear" type="button" class="secondary">Clear</button>
+      </div>
+      <p id="draw-hint" class="fine" hidden>
+        Click the map to add points, then press “Finish route”.
+      </p>
+      <section id="route-panel" hidden>
+        <h2>Route</h2>
+        <div id="route-summary"></div>
+        <div id="stretches"></div>
+      </section>
+      <p id="status" class="fine">Loading regions…</p>
+    </aside>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
