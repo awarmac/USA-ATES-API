@@ -1,0 +1,3 @@
+numpy 2.4.6
+args ['out_pra_noforest', 'test/dem.tif', 'test/pra.tif', '-', '25', '8', '0.003', '8848']
+release cells 1516

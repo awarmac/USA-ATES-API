@@ -1,0 +1,13 @@
+2023-04-25 17:05:18 INFO     Start Calculation
+2023-04-25 17:05:18 INFO     Alpha Angle: 24
+2023-04-25 17:05:18 INFO     Exponent: 8
+2023-04-25 17:05:18 INFO     Flux Threshold: 0.003
+2023-04-25 17:05:18 INFO     Max Z_delta: 270
+2023-04-25 17:05:18 INFO     DEM File: /home/sykes-sfu/Documents/GIS/ATES/Manual_comparison/BowSummit/AutoATES/ALOS30m_final/inputdata/DEM_ATES.tif
+2023-04-25 17:05:18 INFO     Release File: /home/sykes-sfu/Documents/GIS/ATES/Manual_comparison/BowSummit/AutoATES/ALOS30m_final/PRA/pra_binary.tif
+2023-04-25 17:05:18 INFO     Forest File: /home/sykes-sfu/Documents/GIS/ATES/Manual_comparison/BowSummit/AutoATES/ALOS30m_final/inputdata/forest_scaled.tif
+2023-04-25 17:05:18 INFO     Files read in
+2023-04-25 17:05:18 INFO     Multiprocessing starts, used cores: 12
+2023-04-25 17:05:58 INFO     Calculation finished, getting results.
+2023-04-25 17:05:58 INFO     Writing Output Files
+2023-04-25 17:05:58 INFO     Calculation needed: 0:00:40 seconds
