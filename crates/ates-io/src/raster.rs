@@ -144,6 +144,23 @@ pub trait RasterSink {
 /// Converts WGS 84 lon/lat to map coordinates of a projected CRS.
 pub trait Projector {
     fn lonlat_to(&self, lon: f64, lat: f64, epsg: u32) -> Result<(f64, f64), IoError>;
+
+    /// Projected coordinates in `epsg` back to WGS 84 (lon, lat).
+    fn to_lonlat(&self, x: f64, y: f64, epsg: u32) -> Result<(f64, f64), IoError>;
+
+    /// [`Projector::lonlat_to`] for many points.
+    fn lonlat_to_many(&self, pts: &[(f64, f64)], epsg: u32) -> Result<Vec<(f64, f64)>, IoError> {
+        pts.iter()
+            .map(|&(lon, lat)| self.lonlat_to(lon, lat, epsg))
+            .collect()
+    }
+
+    /// [`Projector::to_lonlat`] for many points.
+    fn to_lonlat_many(&self, pts: &[(f64, f64)], epsg: u32) -> Result<Vec<(f64, f64)>, IoError> {
+        pts.iter()
+            .map(|&(x, y)| self.to_lonlat(x, y, epsg))
+            .collect()
+    }
 }
 
 /// Check that all bands share shape, transform and CRS.

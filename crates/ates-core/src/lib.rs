@@ -8,6 +8,7 @@ pub mod flowpy;
 pub mod grid;
 pub mod overhead;
 pub mod pra;
+pub mod route;
 pub mod sieve;
 pub mod terrain;
 

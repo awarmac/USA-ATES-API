@@ -55,7 +55,8 @@ crates/
   ates-core/            pure compute, no I/O: grid.rs, crs.rs, terrain.rs,
                         classify.rs (trait, slope bands), autoates.rs (AutoATES rules),
                         pra.rs (AutoATES PRA), sieve.rs (GDALSieveFilter port),
-                        flowpy.rs (Flow-Py runout, rayon), overhead.rs
+                        flowpy.rs (Flow-Py runout, rayon), overhead.rs,
+                        route.rs (route evaluation)
   ates-io/              raster traits, GDAL backend (feature "gdal"), provenance
   ates-pipeline/        config loading/merging, orchestration, comparison helper
   ates-cli/             `ates` binary (clap)
@@ -81,7 +82,7 @@ api/                    empty Python placeholders; left untouched. The API will 
 | 2 | Removed the placeholder `terrain/` crate and its committed build artefacts, and added `.gitignore` | It was `cargo new` boilerplate and would have been a stray crate inside the root workspace. |
 | 3 | **GPL-3.0-or-later** for all crates, with `LICENSE` at the root | Flow-Py and AutoATES are GPL-3.0, and we port their algorithms. |
 | 4 | **Oracle = upstream AutoATES-v2.0 at commit `3afcb49ae8c8a2385666f6fb4b999c69c82b1e83`** (2023-10-31), not `flow-py/` | The local copy is incomplete: `raster_io`, `Simulation` and `Flow_GUI` are missing, and it is modified. |
-| 5 | CLI commands are `point`, `area` (which replaced M1's `terrain`), `pra`, `flowpy`, `classify`, `build-region`, `sample` and `check-slope`. `route` comes with route evaluation. | `area` writes the same slope/aspect plus the proxy class band. |
+| 5 | CLI commands are `point`, `area` (which replaced M1's `terrain`), `pra`, `flowpy`, `classify`, `build-region`, `sample`, `route` and `check-slope`. `route` comes with route evaluation. | `area` writes the same slope/aspect plus the proxy class band. |
 | 6 | `ates-pipeline` currently holds config, provenance and the terrain path. Tiling and caching come in M6. Remote DEM fetching comes in M2 or M3. | Keeps M1 small. |
 | 7 | Config holds only **cited** scientific values. The AutoATES classifier defaults carry file and line citations. `prep.pad_m` is still TODO, and the CLI must supply it. | Working agreement: values come from the paper or the reference repo, with a citation. |
 | 8 | Slope and aspect replicate gdaldem exactly, including `-compute_edges` extrapolation | It makes "match gdaldem" a strict, testable property. |
@@ -104,6 +105,8 @@ api/                    empty Python placeholders; left untouched. The API will 
 | 25 | Flow-Py's forest layer at Cameron Pass is **canopy cover / 100** | Your decision. The run on OSF used an undocumented `forest_scaled.tif`. |
 | 26 | Region builds use **one padded window with an adaptive pad**; tiling is deferred | Cameron Pass is 1.9 M cells and builds in about 1 minute. The pad is widened until it exceeds the longest modelled runout, instead of guessing `pad_m`. |
 | 27 | Forest is fetched **on the DEM's grid** from the USFS ArcGIS ImageServer (`exportImage`, server-side nearest-neighbour), through `/vsicurl_streaming/` | No local warp, so there is no bilinear smoothing of a percentage. No new dependencies. The server does not support HTTP range requests, so `/vsicurl/` fails. |
+| 28 | **`serde_json`** is a dependency, for reading GeoJSON routes and writing reports (the API will need it too). GPX is read by a small hand-written reader instead of the `gpx` crate. | Your decision (Increment 6). |
+| 29 | Route evaluation is **evaluate-only** and reports modelled terrain facts: length per class, release areas, avalanche paths, overhead, aspect, elevation. It does not score or rank routes. | Your decision (round 2). Wording rule: never "safe". |
 
 ## Terrain (Milestone 1)
 
@@ -335,6 +338,39 @@ Spot checks (sanity only, not validation):
 
 **This is not yet a validated map.** All parameters are authors' defaults or your interim choices; see the TODOs. The next step is to compare it with an expert ATES map, or with known avalanche paths.
 
+## Route evaluation (Increment 6)
+
+```
+ates route --file route.gpx|route.geojson --region cameron_pass [--out report.geojson]
+```
+
+The route evaluation chain:
+1. **Read.** `ates_io::route_file` reads GPX track segments and routes, or GeoJSON `LineString`/`MultiLineString` (bare, or inside a `Feature`/`FeatureCollection`).
+2. **Project.** `ates_pipeline::route` projects the route onto the region build's UTM grid. It uses one PROJ transformation per part (`Projector::lonlat_to_many`).
+3. **Evaluate.** `ates_core::route::evaluate` cuts each segment into equal pieces of at most half a cell (5 m at Cameron Pass) and samples each layer at every piece's midpoint. Consecutive pieces with the same class form a *stretch*. Parts never merge.
+
+The report:
+- **Totals:** route length in each ATES class, on nodata, and outside the region; plus length inside modelled release areas (`pra` = 1) and on modelled avalanche paths (Flow-Py travel angle > 0).
+- **Per stretch:** distance along the route, elevation range, length per aspect sector, dominant aspect, release-area and avalanche-path length, and maximum overhead exposure.
+  - Aspect uses 8 compass sectors, the same as CAIC forecasts, so Increment 9 can match avalanche problems.
+  - Aspect is computed from the region DEM (Horn, as in gdaldem).
+- **Lengths** are horizontal map distances.
+
+Outputs:
+- The terminal summary lists the class 3–4 stretches.
+- `--out` writes a GeoJSON `FeatureCollection` with one `LineString` per stretch, in WGS 84 at 6 decimals. Each stretch keeps only its boundaries and the route's own vertices.
+- A `summary` member holds the totals, the ATES v2 class names (Statham et al. 2018), the disclaimer, and the region build's `manifest.toml`, so every report records the parameters behind it.
+
+Demo on Cameron Pass: illustrative straight legs from the pass toward the Nokhu Crags area, 4.9 km. Evaluation took 0.95 s, including reading the region layers.
+
+| Class | Length |
+|---|---|
+| 1 | 4.18 km (85 %) |
+| 2 | 0.61 km (12.5 %) |
+| 3 | 0.12 km (2.5 %; one W-facing stretch at 3 356–3 392 m) |
+
+The route also has 294 m in release areas and 658 m on modelled avalanche paths.
+
 ## Provenance
 
 GeoTIFF dataset metadata:
@@ -461,4 +497,5 @@ Without GDAL at all, on CI or another machine:
 4. **Runout** — done (Increment 4). `ates flowpy`; all six outputs bit-identical to upstream Flow-Py on three reference runs.
 5. **Classification rules** — done (Increment 2). Every intermediate and `ates_gen` match AutoATES.
 6. **Cameron Pass end to end** — done (Increment 5). `ates build-region` produces Cloud-Optimized GeoTIFF ATES classes from 3DEP and USFS canopy cover in about 1 minute, and `ates sample` reads them at a point. Parameters are not yet validated for Colorado.
-7. Next: route evaluation over the region build, CAIC forecast context, the axum API, then the frontend.
+7. **Route evaluation** — done (Increment 6). `ates route` gives GPX or GeoJSON in, a terminal summary, and a GeoJSON report out.
+8. Next: the axum HTTP API (Increment 7), the frontend MVP (8), CAIC forecast context (9), and scaling beyond one window (10).

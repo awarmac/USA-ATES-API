@@ -17,6 +17,8 @@ ates-io = { workspace = true, features = ["gdal"] }
 ates-pipeline.workspace = true
 clap.workspace = true
 ndarray.workspace = true
+serde_json.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

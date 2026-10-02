@@ -9,6 +9,7 @@
 //! - `build-region`: the whole chain for a configured region, fetching its
 //!   DEM and forest data, written as Cloud-Optimized GeoTIFFs.
 //! - `sample`: read a raster (e.g. a region build) at one point.
+//! - `route`: evaluate a GPX or GeoJSON route against a region build.
 //! - `check-slope`: compare our slope/aspect with GDAL's gdaldem.
 
 use std::error::Error;
@@ -26,6 +27,7 @@ use ates_io::gdal_backend::{
 use ates_io::{Band, GridSource, Projector, RasterSink, RasterSource, WindowRequest};
 use ates_pipeline::config::ForestTypeName;
 use ates_pipeline::region::{INITIAL_PAD_M, RegionSources, build_region};
+use ates_pipeline::route::{ATES_CLASS_NAMES, RegionGrids, evaluate_route, report_geojson};
 use ates_pipeline::{
     AutoAtesInputs, Config, Params, compare, point, provenance, run_autoates, run_flowpy, run_pra,
     terrain,
@@ -81,6 +83,9 @@ enum Command {
     /// run PRA, Flow-Py, overhead exposure and the classifier on one padded
     /// window, and write Cloud-Optimized GeoTIFFs plus a manifest.
     BuildRegion(BuildRegionArgs),
+    /// Evaluate a route (GPX or GeoJSON) against a region build: length in
+    /// each ATES class, and stretches with their terrain context.
+    Route(RouteArgs),
     /// Print the value of every band of a raster at one point.
     Sample {
         /// Raster to read (any GDAL path).
@@ -216,6 +221,22 @@ struct BuildRegionArgs {
     /// Config file.
     #[arg(long, default_value = "config/default.toml")]
     config: PathBuf,
+}
+
+#[derive(Args)]
+struct RouteArgs {
+    /// Route file: .gpx, .geojson or .json (LineString / MultiLineString).
+    #[arg(long)]
+    file: PathBuf,
+    /// Region whose build to use (reads data/regions/<region>).
+    #[arg(long, required_unless_present = "region_dir")]
+    region: Option<String>,
+    /// Region build directory (overrides --region).
+    #[arg(long)]
+    region_dir: Option<PathBuf>,
+    /// Write the full report as GeoJSON here.
+    #[arg(long)]
+    out: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -744,6 +765,125 @@ fn run_build_region(a: &BuildRegionArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_route(a: &RouteArgs) -> Result<(), Box<dyn Error>> {
+    let dir = match (&a.region_dir, &a.region) {
+        (Some(d), _) => d.clone(),
+        (None, Some(r)) => Path::new("data/regions").join(r),
+        (None, None) => unreachable!("clap requires --region or --region-dir"),
+    };
+    let i16_grid = |g: Grid<f32>| Grid {
+        data: g.data.mapv(|v| if v.is_nan() { -9999 } else { v as i16 }),
+        transform: g.transform,
+        crs: g.crs,
+        nodata: g.nodata,
+    };
+    let layer = |name: &str| -> Result<Option<Grid<f32>>, Box<dyn Error>> {
+        let p = dir.join(format!("{name}.tif"));
+        if p.exists() {
+            Ok(Some(
+                read_grid(&p).map_err(|e| format!("{}: {e}", p.display()))?,
+            ))
+        } else {
+            Ok(None)
+        }
+    };
+    let ates = layer("ates")?.ok_or_else(|| {
+        format!(
+            "no ates.tif in {}; run `ates build-region` first",
+            dir.display()
+        )
+    })?;
+    let grids = RegionGrids {
+        ates: i16_grid(ates),
+        dem: layer("dem")?,
+        pra: layer("pra")?.map(i16_grid),
+        fp_travel_angle: layer("fp_travel_angle")?,
+        overhead: layer("overhead")?.map(i16_grid),
+    };
+    let parts = ates_io::route_file::read_route(&a.file)?;
+    let result = evaluate_route(&parts, &grids, &GdalProjector)?;
+    let rep = &result.report;
+
+    let km = |m: f64| m / 1000.0;
+    let pct = |m: f64| 100.0 * m / rep.total_m;
+    println!(
+        "route: {:.2} km in {} part(s), region build {}",
+        km(rep.total_m),
+        parts.len(),
+        dir.display()
+    );
+    for (c, &m) in rep.class_m.iter().enumerate() {
+        if m > 0.0 {
+            println!(
+                "  class {c} {:<22} {:>7.2} km  {:>5.1} %",
+                ATES_CLASS_NAMES[c],
+                km(m),
+                pct(m)
+            );
+        }
+    }
+    if rep.nodata_m > 0.0 {
+        println!(
+            "  no class (nodata)              {:>7.2} km",
+            km(rep.nodata_m)
+        );
+    }
+    if rep.outside_m > 0.0 {
+        println!(
+            "  outside the region             {:>7.2} km",
+            km(rep.outside_m)
+        );
+    }
+    println!(
+        "  in modelled release areas {:.0} m; on modelled avalanche paths {:.0} m",
+        rep.release_area_m, rep.avalanche_path_m
+    );
+    let exposed: Vec<_> = rep
+        .stretches
+        .iter()
+        .filter(|s| s.class.is_some_and(|c| c >= 3))
+        .collect();
+    if !exposed.is_empty() {
+        println!("  class 3-4 stretches (distance along route):");
+        for s in exposed {
+            let elev = match (s.elevation_min_m, s.elevation_max_m) {
+                (Some(lo), Some(hi)) => format!("{lo:.0}-{hi:.0} m"),
+                _ => "-".into(),
+            };
+            println!(
+                "    {:>6.0}-{:<6.0} m  class {}  {:>5.0} m long  aspect {:<2}  elevation {elev}",
+                s.start_m,
+                s.end_m,
+                s.class.unwrap_or(-1),
+                s.length_m(),
+                s.dominant_aspect().map_or("-", |a| a.as_str()),
+            );
+        }
+    }
+    println!("note: {}", ates_io::DISCLAIMER);
+
+    if let Some(out) = &a.out {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "route_file".into(),
+            a.file.display().to_string().replace('\\', "/").into(),
+        );
+        meta.insert(
+            "tool_version".into(),
+            ates_pipeline::TOOL_VERSION.to_owned().into(),
+        );
+        if let Ok(text) = std::fs::read_to_string(dir.join("manifest.toml"))
+            && let Ok(manifest) = text.parse::<toml::Table>()
+        {
+            meta.insert("region_manifest".into(), serde_json::to_value(manifest)?);
+        }
+        let gj = report_geojson(&result, &GdalProjector, meta)?;
+        std::fs::write(out, serde_json::to_string_pretty(&gj)?)?;
+        eprintln!("wrote {}", out.display());
+    }
+    Ok(())
+}
+
 fn run_sample(raster: &Path, center: BBox) -> Result<(), Box<dyn Error>> {
     let (lon, lat) = center.center();
     let first = read_grid(raster)?;
@@ -806,6 +946,7 @@ fn main() -> ExitCode {
         Command::Classify(a) => run_classify(a).map(|()| true),
         Command::BuildRegion(a) => run_build_region(a).map(|()| true),
         Command::Sample { raster, center } => run_sample(raster, *center).map(|()| true),
+        Command::Route(a) => run_route(a).map(|()| true),
         Command::CheckSlope {
             common,
             tolerance_deg,
@@ -930,6 +1071,25 @@ mod tests {
         assert!(
             Cli::try_parse_from(&args[..2]).is_err(),
             "--region is required"
+        );
+    }
+
+    #[test]
+    fn route_args_parse() {
+        let ok = [
+            "ates",
+            "route",
+            "--file",
+            "r.gpx",
+            "--region",
+            "cameron_pass",
+        ];
+        assert!(Cli::try_parse_from(ok).is_ok());
+        let dir = ["ates", "route", "--file", "r.gpx", "--region-dir", "d"];
+        assert!(Cli::try_parse_from(dir).is_ok());
+        assert!(
+            Cli::try_parse_from(&ok[..4]).is_err(),
+            "--region or --region-dir is required"
         );
     }
 

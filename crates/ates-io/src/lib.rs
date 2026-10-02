@@ -6,6 +6,7 @@
 
 pub mod provenance;
 pub mod raster;
+pub mod route_file;
 
 #[cfg(feature = "gdal")]
 pub mod gdal_backend;

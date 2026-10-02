@@ -15,6 +15,7 @@
 
 pub mod config;
 pub mod region;
+pub mod route;
 
 use ates_core::autoates::{self, AutoAtesLayers, FillNodata, OutputMode};
 use ates_core::classify::{ClassifyError, TerrainLayers, slope_classes};
@@ -40,6 +41,8 @@ pub enum PipelineError {
     Crs(#[from] ates_core::crs::CrsError),
     #[error(transparent)]
     Classify(#[from] ClassifyError),
+    #[error(transparent)]
+    Route(#[from] ates_core::route::RouteError),
     #[error("point ({lon}, {lat}) fell outside the computed window")]
     PointOutside { lon: f64, lat: f64 },
 }
@@ -300,6 +303,10 @@ mod tests {
     impl Projector for FixedProjector {
         fn lonlat_to(&self, _: f64, _: f64, _: u32) -> Result<(f64, f64), IoError> {
             Ok((self.0, self.1))
+        }
+
+        fn to_lonlat(&self, x: f64, y: f64, _: u32) -> Result<(f64, f64), IoError> {
+            Ok((x, y))
         }
     }
 

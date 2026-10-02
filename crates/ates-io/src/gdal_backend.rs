@@ -322,14 +322,37 @@ pub struct GdalProjector;
 
 impl Projector for GdalProjector {
     fn lonlat_to(&self, lon: f64, lat: f64, epsg: u32) -> Result<(f64, f64), IoError> {
-        let ct = CoordTransform::new(
-            &gis_order(SpatialRef::from_epsg(4326)?),
-            &gis_order(SpatialRef::from_epsg(epsg)?),
-        )?;
-        let (mut x, mut y, mut z) = ([lon], [lat], [0.0]);
-        ct.transform_coords(&mut x, &mut y, &mut z)?;
-        Ok((x[0], y[0]))
+        Ok(self.lonlat_to_many(&[(lon, lat)], epsg)?[0])
     }
+
+    fn to_lonlat(&self, x: f64, y: f64, epsg: u32) -> Result<(f64, f64), IoError> {
+        Ok(self.to_lonlat_many(&[(x, y)], epsg)?[0])
+    }
+
+    fn lonlat_to_many(&self, pts: &[(f64, f64)], epsg: u32) -> Result<Vec<(f64, f64)>, IoError> {
+        transform_many(pts, 4326, epsg)
+    }
+
+    fn to_lonlat_many(&self, pts: &[(f64, f64)], epsg: u32) -> Result<Vec<(f64, f64)>, IoError> {
+        transform_many(pts, epsg, 4326)
+    }
+}
+
+/// Transform points between EPSG codes with one PROJ transformation, in
+/// traditional GIS (x/lon, y/lat) axis order.
+fn transform_many(pts: &[(f64, f64)], from: u32, to: u32) -> Result<Vec<(f64, f64)>, IoError> {
+    if pts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ct = CoordTransform::new(
+        &gis_order(SpatialRef::from_epsg(from)?),
+        &gis_order(SpatialRef::from_epsg(to)?),
+    )?;
+    let mut x: Vec<f64> = pts.iter().map(|p| p.0).collect();
+    let mut y: Vec<f64> = pts.iter().map(|p| p.1).collect();
+    let mut z = vec![0.0; pts.len()];
+    ct.transform_coords(&mut x, &mut y, &mut z)?;
+    Ok(x.into_iter().zip(y).collect())
 }
 
 /// [`FillNodata`] backed by `GDALFillNodata`, with the same call AutoATES
