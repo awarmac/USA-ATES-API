@@ -1,6 +1,7 @@
 //! Pure compute for the ATES estimator: raster grids, CRS helpers, and
 //! terrain derivatives. This crate performs no I/O.
 
+pub mod area;
 pub mod autoates;
 pub mod classify;
 pub mod crs;

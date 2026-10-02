@@ -799,6 +799,7 @@ fn run_route(a: &RouteArgs) -> Result<(), Box<dyn Error>> {
         pra: layer("pra")?.map(i16_grid),
         fp_travel_angle: layer("fp_travel_angle")?,
         overhead: layer("overhead")?.map(i16_grid),
+        aspect: None,
     };
     let parts = ates_io::route_file::read_route(&a.file)?;
     let result = evaluate_route(&parts, &grids, &GdalProjector)?;

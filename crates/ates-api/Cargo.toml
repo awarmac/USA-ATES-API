@@ -1,0 +1,28 @@
+[package]
+name = "ates-api"
+description = "HTTP API serving precomputed ATES region builds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ates-api"
+path = "src/main.rs"
+
+[dependencies]
+ates-core.workspace = true
+ates-io = { workspace = true, features = ["gdal"] }
+ates-pipeline.workspace = true
+axum.workspace = true
+clap.workspace = true
+ndarray.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tower-http.workspace = true
+
+[lints]
+workspace = true

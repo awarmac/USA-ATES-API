@@ -60,6 +60,7 @@ crates/
   ates-io/              raster traits, GDAL backend (feature "gdal"), provenance
   ates-pipeline/        config loading/merging, orchestration, comparison helper
   ates-cli/             `ates` binary (clap)
+  ates-api/             `ates-api` HTTP server (axum) over region builds
 tests/fixtures/         small DEM clips + reference outputs (see their READMEs);
                         bow_summit/autoates/ = AutoATES inputs and every intermediate output
                         autoates_pra/ = clipped AutoATES PRA inputs and outputs
@@ -71,7 +72,7 @@ scripts/make_fixtures.py  regenerates gdaldem references (needs osgeo Python)
 scripts/flowpy_oracle.py  runs upstream Flow-Py unchanged to make reference runs
 .github/workflows/ci.yml  fmt, clippy -D warnings, tests (Ubuntu, GDAL 3.8)
 flow-py/                vendored partial Flow-Py (GPL-3.0); reading material only
-api/                    empty Python placeholders; left untouched. The API will be a Rust axum crate.
+api/                    empty Python placeholders; left untouched. The API is crates/ates-api.
 ```
 
 ## Decisions and deviations from the original proposal
@@ -107,6 +108,9 @@ api/                    empty Python placeholders; left untouched. The API will 
 | 27 | Forest is fetched **on the DEM's grid** from the USFS ArcGIS ImageServer (`exportImage`, server-side nearest-neighbour), through `/vsicurl_streaming/` | No local warp, so there is no bilinear smoothing of a percentage. No new dependencies. The server does not support HTTP range requests, so `/vsicurl/` fails. |
 | 28 | **`serde_json`** is a dependency, for reading GeoJSON routes and writing reports (the API will need it too). GPX is read by a small hand-written reader instead of the `gpx` crate. | Your decision (Increment 6). |
 | 29 | Route evaluation is **evaluate-only** and reports modelled terrain facts: length per class, release areas, avalanche paths, overhead, aspect, elevation. It does not score or rank routes. | Your decision (round 2). Wording rule: never "safe". |
+| 30 | **`axum`, `tokio`, `tower-http`** for the HTTP API | Approved for Increment 7. |
+| 31 | The API **loads region builds into memory at startup** and never computes ATES per request. Aspect and slope are precomputed once. | Cameron Pass is about 1.9 M cells per layer, so memory is modest. Route requests take about 5 ms instead of 400 ms. Tiled COG window reads can replace this for large regions (Increment 10). |
+| 32 | **CORS allows any origin** (GET/POST, `content-type`) | So a local frontend dev server can call it. Tighten before any public deployment. |
 
 ## Terrain (Milestone 1)
 
@@ -371,6 +375,39 @@ Demo on Cameron Pass: illustrative straight legs from the pass toward the Nokhu 
 
 The route also has 294 m in release areas and 658 m on modelled avalanche paths.
 
+## HTTP API (Increment 7)
+
+```
+ates-api --data-dir data/regions --bind 127.0.0.1:8080
+```
+
+| Method | Path | Input | Output |
+|---|---|---|---|
+| GET | `/v1/health` | | `{status, tool_version, regions}` |
+| GET | `/v1/regions` | | per region: bbox, EPSG, size, cells per class, COG URLs, full manifest |
+| GET | `/v1/point` | `lon`, `lat`, optional `region` | class and name, elevation, slope, aspect (degrees and sector), canopy %, in release area, on avalanche path, travel angle, overhead |
+| POST | `/v1/area` | GeoJSON Polygon/MultiPolygon (holes allowed); optional `?region=` | area and share per class, `nodata`, cells |
+| POST | `/v1/route/evaluate` | GeoJSON line, or GPX (an `xml` content type, or a body starting with `<`); optional `?region=` | the Increment 6 GeoJSON report |
+| GET | `/v1/files/{region}/{layer}.tif` | | Cloud-Optimized GeoTIFFs, with HTTP range requests, for a map client |
+
+How it behaves:
+- **Contract.** `crates/ates-api/src/types.rs` defines the response types the frontend relies on.
+- **Disclaimer and provenance.** Every JSON response carries the disclaimer, and errors are JSON too (`{error, disclaimer}`). Provenance gives the tool version, the model, the region, and the build's config fingerprint.
+- **Region choice.** Without `?region=`, the API picks the first region containing any vertex of the geometry, or the only region if there is just one.
+- **Blocking work.** Route and area computations run on Tokio's blocking pool.
+
+Tests:
+- `crates/ates-api/tests/handlers.rs` calls each handler on a synthetic 20 × 20 region placed at Cameron Pass in UTM 13N, so projections are real. It covers point, outside (404), bad input (400), unknown region, area, and route from both GeoJSON and GPX.
+
+Smoke test against the real Cameron Pass build, 2026-10-02:
+- `/v1/regions` lists the build and its 8 COGs.
+- `/v1/point` at Nokhu Crags: class 3, release area, travel angle 32°, aspect S.
+- A point outside every region returns 404 with a JSON body.
+- `/v1/route/evaluate` on the demo GPX matches `ates route` exactly, in about 5 ms.
+- `/v1/area` on a box around the pass returns about 1.02 km², 99 % class 1.
+- A `Range: bytes=0-1023` request on `ates.tif` returns 206.
+- The CORS preflight from `localhost:5173` is allowed.
+
 ## Provenance
 
 GeoTIFF dataset metadata:
@@ -498,4 +535,5 @@ Without GDAL at all, on CI or another machine:
 5. **Classification rules** — done (Increment 2). Every intermediate and `ates_gen` match AutoATES.
 6. **Cameron Pass end to end** — done (Increment 5). `ates build-region` produces Cloud-Optimized GeoTIFF ATES classes from 3DEP and USFS canopy cover in about 1 minute, and `ates sample` reads them at a point. Parameters are not yet validated for Colorado.
 7. **Route evaluation** — done (Increment 6). `ates route` gives GPX or GeoJSON in, a terminal summary, and a GeoJSON report out.
-8. Next: the axum HTTP API (Increment 7), the frontend MVP (8), CAIC forecast context (9), and scaling beyond one window (10).
+8. **HTTP API** — done (Increment 7). `ates-api` serves regions, points, areas, route evaluation and the COGs.
+9. Next: the frontend MVP (Increment 8), CAIC forecast context (9), and scaling beyond one window (10).

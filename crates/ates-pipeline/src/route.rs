@@ -33,6 +33,9 @@ pub struct RegionGrids {
     pub pra: Option<Grid<i16>>,
     pub fp_travel_angle: Option<Grid<f32>>,
     pub overhead: Option<Grid<i16>>,
+    /// Aspect azimuth from the DEM. Computed per request when `None`; a
+    /// server precomputes it once.
+    pub aspect: Option<Grid<f32>>,
 }
 
 /// A route's report together with the grid's EPSG code.
@@ -57,11 +60,19 @@ pub fn evaluate_route(
         .iter()
         .map(|p| projector.lonlat_to_many(p, epsg))
         .collect::<Result<Vec<_>, _>>()?;
-    let aspect = grids.dem.as_ref().map(|d| aspect_deg(d, false));
+    let computed;
+    let aspect = match (&grids.aspect, &grids.dem) {
+        (Some(a), _) => Some(a),
+        (None, Some(d)) => {
+            computed = aspect_deg(d, false);
+            Some(&computed)
+        }
+        (None, None) => None,
+    };
     let layers = RouteLayers {
         ates: &grids.ates,
         dem: grids.dem.as_ref(),
-        aspect: aspect.as_ref(),
+        aspect,
         pra: grids.pra.as_ref(),
         fp_travel_angle: grids.fp_travel_angle.as_ref(),
         overhead: grids.overhead.as_ref(),
@@ -194,6 +205,7 @@ mod tests {
             pra: None,
             fp_travel_angle: None,
             overhead: None,
+            aspect: None,
         }
     }
 

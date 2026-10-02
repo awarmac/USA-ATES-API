@@ -1,4 +1,4 @@
-//! Reading routes from GPX and GeoJSON files.
+//! Reading routes from GPX and GeoJSON files, and areas from GeoJSON.
 //!
 //! Both return the route as parts, each a polyline of (lon, lat) in WGS 84
 //! degrees:
@@ -180,6 +180,72 @@ fn line(coords: Option<&serde_json::Value>) -> Result<Vec<(f64, f64)>, IoError> 
         .collect()
 }
 
+/// A polygon as rings of (lon, lat): outer ring first, then holes.
+pub type LonLatPolygon = Vec<Vec<(f64, f64)>>;
+
+/// Parse GeoJSON `Polygon` and `MultiPolygon` geometries (alone or inside
+/// `Feature`, `FeatureCollection` or `GeometryCollection`). Other
+/// geometry types are ignored.
+pub fn parse_geojson_polygons(text: &str) -> Result<Vec<LonLatPolygon>, IoError> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| IoError::Invalid(format!("GeoJSON: {e}")))?;
+    let mut out = Vec::new();
+    collect_polygons(&v, &mut out)?;
+    Ok(out)
+}
+
+fn collect_polygons(v: &serde_json::Value, out: &mut Vec<LonLatPolygon>) -> Result<(), IoError> {
+    let polygon = |p: &serde_json::Value| -> Result<LonLatPolygon, IoError> {
+        p.as_array()
+            .ok_or_else(|| IoError::Invalid("GeoJSON: a polygon needs rings".into()))?
+            .iter()
+            .map(|ring| line(Some(ring)))
+            .collect()
+    };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("FeatureCollection") => {
+            for f in v
+                .get("features")
+                .and_then(|f| f.as_array())
+                .into_iter()
+                .flatten()
+            {
+                collect_polygons(f, out)?;
+            }
+        }
+        Some("Feature") => {
+            if let Some(g) = v.get("geometry").filter(|g| !g.is_null()) {
+                collect_polygons(g, out)?;
+            }
+        }
+        Some("GeometryCollection") => {
+            for g in v
+                .get("geometries")
+                .and_then(|g| g.as_array())
+                .into_iter()
+                .flatten()
+            {
+                collect_polygons(g, out)?;
+            }
+        }
+        Some("Polygon") => out.push(polygon(
+            v.get("coordinates").unwrap_or(&serde_json::Value::Null),
+        )?),
+        Some("MultiPolygon") => {
+            for p in v
+                .get("coordinates")
+                .and_then(|c| c.as_array())
+                .into_iter()
+                .flatten()
+            {
+                out.push(polygon(p)?);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +274,23 @@ mod tests {
             ]
         );
         assert!(parse_gpx(r#"<trkpt lon="1"/>"#).is_err(), "missing lat");
+    }
+
+    #[test]
+    fn geojson_polygons() {
+        let mp = r#"{"type":"Feature","properties":{},"geometry":{"type":"MultiPolygon","coordinates":[
+            [[[0,0],[1,0],[1,1],[0,0]],[[0.2,0.1],[0.5,0.1],[0.5,0.3],[0.2,0.1]]],
+            [[[5,5],[6,5],[6,6],[5,5]]]]}}"#;
+        let p = parse_geojson_polygons(mp).unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].len(), 2, "outer ring and one hole");
+        assert_eq!(p[1][0][1], (6.0, 5.0));
+        assert!(
+            parse_geojson_polygons(r#"{"type":"LineString","coordinates":[[0,0],[1,1]]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parse_geojson_polygons(r#"{"type":"Polygon","coordinates":[1]}"#).is_err());
     }
 
     #[test]
