@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/ates-core", "crates/ates-io", "crates/ates-pipeline", "crates/ates-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/awarmac/USA-ATES-API"
+
+[workspace.dependencies]
+ates-core = { path = "crates/ates-core" }
+ates-io = { path = "crates/ates-io", default-features = false }
+ates-pipeline = { path = "crates/ates-pipeline" }
+ndarray = "0.17"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+clap = { version = "4.6", features = ["derive"] }
+tracing = "0.1"
+rayon = "1"
+gdal = "0.19"
+# Direct use only for GDALFillNodata, which the safe crate does not wrap.
+gdal-sys = "0.12"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

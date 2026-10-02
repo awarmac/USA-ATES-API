@@ -1,0 +1,11 @@
+/target/
+**/target/
+*.pdb
+*.exe
+__pycache__/
+*.pyc
+/.cargo/config.toml
+/.vendor/
+
+# Region builds (large, regenerable with `ates build-region`)
+/data/

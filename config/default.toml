@@ -1,0 +1,136 @@
+# ATES estimator configuration.
+#
+# Rule: every scientific threshold must cite its source (paper section, or
+# reference-repo file + commit). Unsourced values stay out of this file and
+# are marked TODO; the tool refuses to run a step that needs a missing value.
+#
+# `[defaults]` applies everywhere; `[regions.<name>]` tables use the same
+# layout and are merged over the defaults with `--region <name>`.
+
+schema_version = 1
+
+[defaults.dem]
+# Analysis cell size in metres. Omit to keep a projected source's native
+# resolution (geographic sources, e.g. USGS 3DEP, then require --res-m).
+# TODO: set per DEM source once the resolution AutoATES v2.0 was tuned at is
+# confirmed from the paper and cited here.
+# target_res_m =
+# Only "bilinear" is supported for now (gdal crate `reproject`).
+resampling = "bilinear"
+
+[defaults.prep]
+# Margin around a request, in metres. Must cover the longest plausible runout
+# so upslope release areas contribute. TODO: derive from runout parameters
+# (Milestone 4). Until then pass --pad-m on the command line.
+# pad_m =
+
+[defaults.terrain]
+# Same meaning as `gdaldem -compute_edges`. Edge cells normally fall in the
+# trimmed pad, so this rarely matters.
+compute_edges = false
+
+[defaults.classify]
+# AutoATES v2.0 classifier defaults. Source: AutoATES/AutoATES-v2.0 @
+# 3afcb49ae8c8a2385666f6fb4b999c69c82b1e83, AutoATES_classifier.py
+# (line numbers below). Verified against the file at that commit, and
+# reproduced cell-for-cell on the Bow Summit test data. These are the
+# authors' defaults, not values tuned for any US region.
+sat01 = 15        # line 28, class 0/1 slope threshold (degrees)
+sat12 = 18        # line 30, class 1/2
+sat23 = 28        # line 32, class 2/3
+sat34 = 39        # line 35, class 3/4, applied to the smoothed slope
+win_size = 3      # line 23, moving-window size for the class-4 smoothing
+aat1 = 18         # line 39, alpha-angle threshold class 1 (unused upstream, kept for provenance)
+aat2 = 24         # line 41
+aat3 = 33         # line 43
+cc1 = 5           # line 82, Flow-Py cell-count thresholds
+cc2 = 40          # line 83
+isl_size_m2 = 30000  # line 86, minimum cluster area kept by the cleanup step
+# forest_type is region-specific: it depends on the forest raster you have.
+
+[defaults.classify.forest]
+# TREE1, TREE2, TREE3 per forest type, from AutoATES_classifier.py lines 45-79.
+pcc = [10, 50, 65]          # percent canopy cover
+bav = [10, 20, 25]          # basal area (m^2/ha)
+stems = [100, 250, 500]     # stems per hectare
+sen2ccc = [20, 60, 85]      # Sentinel-2 canopy cover (%)
+
+[defaults.pra]
+# AutoATES v2.0 potential-release-area defaults. Source: AutoATES/AutoATES-v2.0
+# @ 3afcb49ae8c8a2385666f6fb4b999c69c82b1e83, PRA/PRA_AutoATES-v2.0.py
+# (line numbers below). The same values appear in that commit's PRA/log.txt.
+# Reproduced cell-for-cell on AutoATES's PRA test data. The model is from
+# Veitinger et al. (2016) and Sharp (2018). These are the authors' defaults,
+# not values tuned for any US region.
+windshelter_radius_m = 60  # line 39: "A general recommendation is to use 60 m" (6 cells at 10 m)
+windshelter_prob = 0.5     # line 40: "Default is 0.5"
+wind_dir_deg = 0           # line 41: "Default for AutoATES v2.0 is 0"
+wind_tol_deg = 180         # line 42: "Default for AutoATES v2.0 is 180" (all directions)
+threshold = 0.15           # line 43: "Default for AutoATES is 0.15"
+sieve_cells = 3            # line 44 and log.txt: sf = 3 (areas of at most 3 cells removed)
+# Cauchy membership functions [a, b, c] = 1 / (1 + ((x - c) / a)^(2b)).
+slope_cauchy = [11, 4, 43]       # lines 242-244
+windshelter_cauchy = [3, 10, 3]  # lines 251-253
+
+[defaults.pra.forest_cauchy]
+stems = [350, 2, -120]   # lines 263-265
+pcc = [40, 3.5, -15]     # lines 282-284; also used when no forest raster is given
+# Upstream never loads the forest raster for the next two (the script fails),
+# so PRA with them is unverified against AutoATES.
+bav = [20, 3.5, -10]     # lines 269-271
+sen2ccc = [50, 1.5, 0]   # lines 275-277 (sen2cc); upstream says it is still finalizing these
+
+[defaults.flowpy]
+# Flow-Py runout (AutoATES/AutoATES-v2.0 @ 3afcb49, FlowPy_detrainment/).
+# Source: the Flow-Py log of the Bow Summit validation run in Sykes, Toft &
+# Haegeli (2023), OSF https://doi.org/10.17605/OSF.IO/ZXJW5, file
+# "Grid search localization/BowSummit_ALOS30m_final.zip",
+# ALOS30m_final/flowpy/res_20230425_170518/log_20230425_170518.txt
+# (copied to tests/fixtures/bow_summit/autoates/osf_flowpy/). That run
+# produced the FP_int16.tif and Overhead.tif in AutoATES's own
+# test-data/Bow Summit. The values are tuned for the Canadian Rockies, not
+# validated for Colorado: TODO validate alpha, flux and max_z locally.
+alpha_deg = 24          # "Alpha Angle: 24"
+exponent = 8            # "Exponent: 8"; Flow-Py readme.md line 210 agrees
+flux_threshold = 0.003  # "Flux Threshold: 0.003"
+max_z_delta = 270       # "Max Z_delta: 270"
+# Flow-Py's forest layer in region builds: "none" or "pcc_fraction".
+forest = "none"
+
+[regions.bow_summit]
+description = "Bow Summit, Banff National Park, Alberta. AutoATES v2.0 test-data region; used for golden tests."
+classify.forest_type = "bav"   # as in test-data/Bow Summit/outputs/inputpara.csv (TREE 10/20/25)
+
+[regions.bow_summit.site]
+dem_source = "AutoATES-v2.0 test-data/Bow Summit/dem.tif @ 3afcb49"
+forest_source = "AutoATES-v2.0 test-data/Bow Summit/forest.tif @ 3afcb49"
+
+[regions.cameron_pass]
+description = "Cameron Pass, CO-14, northern Front Range, Colorado. First US test region."
+# USGS 3DEP 1/3 arc-second seamless DEM has ~10 m nominal resolution (USGS
+# 3DEP product specification); the analysis grid uses that resolution.
+dem.target_res_m = 10
+# USFS Tree Canopy Cover is percent canopy cover -> AutoATES forest_type pcc.
+classify.forest_type = "pcc"
+# Canopy-cover thresholds from Toft et al. (2024), NHESS 24, 1779, Table 2
+# (citing Sykes et al. 2023): open < 20, sparse 20-55, moderate 55-75,
+# dense > 75. AutoATES_classifier.py @ 3afcb49 uses 10/50/65 instead.
+# TODO(owner): research how these thresholds were derived and whether they
+# suit USFS canopy cover in Colorado.
+classify.forest.pcc = [20, 55, 75]
+# Flow-Py forest = canopy cover / 100. The scaling of the "forest_scaled.tif"
+# in the Sykes et al. (2023) run is undocumented; this linear choice is ours.
+flowpy.forest = "pcc_fraction"
+
+[regions.cameron_pass.site]
+# Approximate area of interest around the pass (to confirm).
+bbox = [-105.95, 40.45, -105.80, 40.58]
+dem_source = "USGS 3DEP 1/3 arc-second seamless DEM, tile n41w106 (Cloud-Optimized GeoTIFF)"
+dem_path = "/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/n41w106/USGS_13_n41w106.tif"
+forest_source = "USFS Science Tree Canopy Cover, CONUS, 30 m, v2025-6, year 2024"
+forest_service = "https://imagery.geoplatform.gov/iipp/rest/services/Vegetation/USFS_EDW_Science_TCC_CONUS/ImageServer"
+forest_where = "beginyear=2024"
+# TCC: 254 = non-processing area, 255 = background (USFS TCC metadata).
+forest_invalid = [254, 255]
+# TODO: CAIC forecast area id covering Cameron Pass (needs an in-season lookup).
+# caic_zone = ""

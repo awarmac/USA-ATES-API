@@ -1,0 +1,28 @@
+[package]
+name = "ates-io"
+description = "Raster I/O for the ATES estimator: DEM sources and GeoTIFF writers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["gdal"]
+# GDAL-backed reader/writer. Requires the GDAL C library and headers.
+gdal = ["dep:gdal", "dep:gdal-sys"]
+
+[dependencies]
+ates-core.workspace = true
+gdal = { workspace = true, optional = true }
+gdal-sys = { workspace = true, optional = true }
+ndarray.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

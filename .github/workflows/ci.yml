@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ubuntu 24.04 ships GDAL 3.8; gdal-sys has prebuilt bindings for it
+      # and finds it with pkg-config.
+      - name: Install GDAL
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgdal-dev gdal-bin pkg-config
+
+      # rustup reads rust-toolchain.toml (pinned version, rustfmt, clippy).
+      - name: Show toolchain
+        run: rustup show && gdalinfo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Test without GDAL feature
+        run: cargo test -p ates-core -p ates-io -p ates-pipeline --no-default-features

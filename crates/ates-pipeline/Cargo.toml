@@ -1,0 +1,25 @@
+[package]
+name = "ates-pipeline"
+description = "Orchestration, configuration and provenance for the ATES estimator."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["gdal"]
+gdal = ["ates-io/gdal"]
+
+[dependencies]
+ates-core.workspace = true
+ates-io.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+ndarray.workspace = true
+
+[lints]
+workspace = true
