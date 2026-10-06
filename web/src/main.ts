@@ -43,10 +43,11 @@ const map = new maplibregl.Map({
   container: "map",
   center: [-105.875, 40.515],
   zoom: 12,
-  maxZoom: 17,
+  maxZoom: 18,
   style: {
     version: 8,
     sources: {
+      // Cached tiles exist only to z16; beyond that MapLibre stretches them.
       topo: {
         type: "raster",
         tiles: [
@@ -56,8 +57,24 @@ const map = new maplibregl.Map({
         maxzoom: 16,
         attribution: "Basemap: USGS The National Map",
       },
+      // NAIP orthoimagery (about 0.3-0.6 m), rendered on request at any
+      // zoom. Each 256 px tile asks for a 512 px image so it stays sharp
+      // on high-density screens.
+      aerial: {
+        type: "raster",
+        tiles: [
+          "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage" +
+            "?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&format=jpg&f=image",
+        ],
+        tileSize: 256,
+        maxzoom: 18,
+        attribution: "Imagery: USGS, USDA NAIP, The National Map",
+      },
     },
-    layers: [{ id: "topo", type: "raster", source: "topo" }],
+    layers: [
+      { id: "topo", type: "raster", source: "topo" },
+      { id: "aerial", type: "raster", source: "aerial", layout: { visibility: "none" } },
+    ],
   },
 });
 map.addControl(new maplibregl.NavigationControl(), "top-right");
@@ -196,6 +213,31 @@ $<HTMLInputElement>("opacity").oninput = (e) => {
     map.setPaintProperty("ates", "raster-opacity", Number((e.target as HTMLInputElement).value));
   }
 };
+
+// ---------------------------------------------------------------- basemap
+
+/** Zoom beyond which the topo basemap has no cached tiles. */
+const TOPO_MAX_ZOOM = 16;
+
+function updateZoomHint(): void {
+  const topo = $<HTMLSelectElement>("basemap").value === "topo";
+  $("zoom-hint").hidden = !(topo && map.getZoom() > TOPO_MAX_ZOOM);
+}
+
+function setBasemap(name: string): void {
+  for (const id of ["topo", "aerial"]) {
+    map.setLayoutProperty(id, "visibility", id === name ? "visible" : "none");
+  }
+  try {
+    localStorage.setItem("basemap", name);
+  } catch {
+    // Storage can be unavailable (private mode); the choice just isn't remembered.
+  }
+  updateZoomHint();
+}
+
+$<HTMLSelectElement>("basemap").onchange = (e) => setBasemap((e.target as HTMLSelectElement).value);
+map.on("zoomend", updateZoomHint);
 
 // ---------------------------------------------------------------- point details
 
@@ -369,6 +411,16 @@ map.on("click", (e: MapMouseEvent) => {
 });
 
 map.on("load", async () => {
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem("basemap");
+  } catch {
+    // No storage: keep the default.
+  }
+  if (saved === "topo" || saved === "aerial") {
+    $<HTMLSelectElement>("basemap").value = saved;
+    setBasemap(saved);
+  }
   map.addSource("route", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addSource("draft", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
