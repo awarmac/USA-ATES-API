@@ -451,8 +451,9 @@ The disclaimer is always visible, and repeated in popups and route results.
 Checked:
 - `tsc --noEmit` and `vite build` are clean, and `npm audit` reports 0 vulnerabilities.
 - `ates-api --web-dir web/dist` serves the page and its bundle, plus range reads of `ates.pmtiles` (206).
+- A brief manual browser check (2026-10-06): the overlay, point popups and route drawing work. That check found the fixes for MapLibre's worker, cache headers, layer order and fit padding.
 
-The UI has not yet been checked in a browser by the tooling; that is a manual step.
+Not yet checked: **GPX/GeoJSON upload** in the browser. The CLI and API paths are tested; the upload control is not.
 
 ## Provenance
 
@@ -571,6 +572,7 @@ Without GDAL at all, on CI or another machine:
 - `bav` and `sen2ccc` PRA can't be verified against AutoATES, because the upstream script fails for both.
 - Decide whether to add `tracing-subscriber`, which is off the candidate list.
 - Treeline elevations per CAIC zone, needed for forecast context.
+- Test GPX and GeoJSON upload in the web map, in a browser.
 
 ## Milestones and increments
 
