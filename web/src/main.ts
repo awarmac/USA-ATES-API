@@ -7,6 +7,11 @@
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource, MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+// MapLibre v6 runs sources such as GeoJSON in a module worker that it
+// looks for next to its own file; bundlers do not copy it there, so the
+// worker failed to load and drawn routes never rendered. Let Vite bundle
+// the worker and tell MapLibre where it is.
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { PMTiles, Protocol } from "pmtiles";
 import "./style.css";
 import {
@@ -26,6 +31,8 @@ interface LegendEntry {
 }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 const protocol = new Protocol();
 maplibregl.addProtocol("pmtiles", protocol.tile);
@@ -108,9 +115,10 @@ async function showRegion(region: RegionInfo): Promise<void> {
       "raster-opacity": Number($<HTMLInputElement>("opacity").value),
     },
   });
-  if (map.getLayer("route-casing")) map.moveLayer("route-casing");
-  if (map.getLayer("route")) map.moveLayer("route");
-  if (map.getLayer("draft")) map.moveLayer("draft");
+  // Keep the route and the route being drawn above the overlay.
+  for (const id of ["route-casing", "route", "draft", "draft-points"]) {
+    if (map.getLayer(id)) map.moveLayer(id);
+  }
 
   if (meta.legend) {
     classColors = meta.legend.map((l) => rgb(l.rgba));
@@ -216,7 +224,22 @@ async function runRoute(body: string, isGpx: boolean): Promise<void> {
   }
 }
 
+/** Padding that keeps fitted bounds clear of the side panel. */
+function fitPadding(extra: number): maplibregl.PaddingOptions {
+  const panel = $("panel").getBoundingClientRect();
+  const beside = window.innerWidth > 600;
+  return {
+    top: extra,
+    right: extra,
+    bottom: beside ? extra : window.innerHeight - panel.top + extra,
+    left: beside ? panel.right + extra : extra,
+  };
+}
+
 function showReport(rep: RouteReport): void {
+  // The evaluated route replaces the draft, so its class colours show.
+  draft = [];
+  setDraft();
   (map.getSource("route") as GeoJSONSource).setData(rep as unknown as Parameters<GeoJSONSource["setData"]>[0]);
   const s = rep.summary;
   const km = (m: number) => (m / 1000).toFixed(2);
@@ -251,13 +274,13 @@ function showReport(rep: RouteReport): void {
     item.onclick = () => {
       const b = new maplibregl.LngLatBounds();
       for (const c of f.geometry.coordinates) b.extend(c);
-      map.fitBounds(b, { padding: 120, maxZoom: 16 });
+      map.fitBounds(b, { padding: fitPadding(80), maxZoom: 16 });
     };
     list.append(item);
   }
   const all = new maplibregl.LngLatBounds();
   for (const f of rep.features) for (const c of f.geometry.coordinates) all.extend(c);
-  if (!all.isEmpty()) map.fitBounds(all, { padding: 80, maxZoom: 15 });
+  if (!all.isEmpty()) map.fitBounds(all, { padding: fitPadding(40), maxZoom: 15 });
 }
 
 $("draw").onclick = () => {

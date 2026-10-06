@@ -8,6 +8,10 @@ export default defineConfig({
       "/v1": process.env.ATES_API ?? "http://127.0.0.1:8080",
     },
   },
+  // MapLibre's worker is an ES module (it imports a shared chunk).
+  worker: {
+    format: "es",
+  },
   build: {
     outDir: "dist",
     chunkSizeWarningLimit: 1500,

@@ -41,6 +41,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeader;
 
 pub use regions::Region;
 use types::{
@@ -117,7 +118,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/route/evaluate", post(route_evaluate))
         .nest_service("/v1/files", ServeDir::new(&state.data_dir));
     if let Some(web) = &state.web_dir {
-        app = app.fallback_service(ServeDir::new(web));
+        // Revalidate the app on every load so a rebuilt frontend is never
+        // served stale from the browser cache (hashed assets still hit
+        // 304 Not Modified cheaply).
+        let web = SetResponseHeader::if_not_present(
+            ServeDir::new(web),
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-cache"),
+        );
+        app = app.fallback_service(web);
     }
     app.layer(cors).with_state(state)
 }
