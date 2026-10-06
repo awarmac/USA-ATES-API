@@ -13,18 +13,24 @@ use tracing::{debug, warn};
 
 use crate::Provenance;
 use crate::raster::{
-    Band, BandData, GridSource, IoError, Projector, RasterSink, RasterSource, WindowRequest,
-    check_aligned,
+    Band, BandData, GridSource, IoError, Projector, RasterSink, RasterSource, TILE_PLACEHOLDER,
+    WindowRequest, check_aligned, degree_tiles,
 };
 
 /// Nodata used for warped DEM windows.
 pub const DEM_NODATA: f32 = -9999.0;
 
 /// Upper bound on cells in one window, to fail fast instead of exhausting
-/// memory (100 M cells is 400 MB of f32). Tiling will lift this later.
+/// memory (100 M cells is 400 MB of f32, about 10 000 km² at 10 m).
+/// Tiled compute will lift this when regions grow beyond it.
 pub const MAX_WINDOW_CELLS: usize = 100_000_000;
 
 /// A DEM in any GDAL-readable format, warped on demand to the analysis grid.
+///
+/// A path containing [`TILE_PLACEHOLDER`] names a set of 1° × 1° tiles
+/// (USGS 3DEP style, see [`degree_tiles`]). Each window then opens the
+/// tiles it overlaps and mosaics them in memory (GDAL BuildVRT) before
+/// warping, so a region may cross degree lines.
 #[derive(Debug, Clone)]
 pub struct GdalDem {
     path: PathBuf,
@@ -33,6 +39,25 @@ pub struct GdalDem {
 impl GdalDem {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
+    }
+
+    /// Open the tiles covering `footprint` (lon/lat) as one dataset.
+    fn open_tiles(&self, footprint: &BBox) -> Result<Dataset, IoError> {
+        let template = self.path.to_string_lossy();
+        let tiles = degree_tiles(footprint);
+        debug!(?tiles, "opening DEM tiles");
+        let mut datasets = tiles
+            .iter()
+            .map(|t| {
+                let path = template.replace(TILE_PLACEHOLDER, t);
+                Dataset::open(&path)
+                    .map_err(|e| IoError::Invalid(format!("DEM tile {t} ({path}): {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if datasets.len() == 1 {
+            return Ok(datasets.remove(0));
+        }
+        Ok(gdal::programs::raster::build_vrt(None, &datasets, None)?)
     }
 }
 
@@ -48,30 +73,51 @@ impl RasterSource for GdalDem {
                 req.pad_m
             )));
         }
-        let src = Dataset::open(&self.path)?;
-        let src_srs = src.spatial_ref()?;
+        let tiled = self.path.to_string_lossy().contains(TILE_PLACEHOLDER);
+        let single = if tiled {
+            None
+        } else {
+            Some(Dataset::open(&self.path)?)
+        };
         let dst_srs = gis_order(SpatialRef::from_epsg(req.dst_epsg)?);
 
-        let res = match req.target_res_m {
-            Some(r) if r.is_finite() && r > 0.0 => r,
-            Some(r) => {
+        let res = match (req.target_res_m, &single) {
+            (Some(r), _) if r.is_finite() && r > 0.0 => r,
+            (Some(r), _) => {
                 return Err(IoError::Invalid(format!(
                     "target_res_m must be > 0, got {r}"
                 )));
             }
-            None if src_srs.is_projected() => {
+            (None, Some(src)) if src.spatial_ref()?.is_projected() => {
                 let gt = src.geo_transform()?;
-                gt[1].abs().min(gt[5].abs()) * src_srs.linear_units()
+                gt[1].abs().min(gt[5].abs()) * src.spatial_ref()?.linear_units()
             }
-            None => return Err(IoError::NeedsTargetRes(self.describe())),
+            // Degree tiles are geographic, so they need a target resolution.
+            (None, _) => return Err(IoError::NeedsTargetRes(self.describe())),
         };
 
-        let to_dst = CoordTransform::new(&gis_order(SpatialRef::from_epsg(4326)?), &dst_srs)?;
+        let wgs84 = gis_order(SpatialRef::from_epsg(4326)?);
+        let to_dst = CoordTransform::new(&wgs84, &dst_srs)?;
         let b = req.bbox_wgs84;
         let [x0, y0, x1, y1] =
             to_dst.transform_bounds(&[b.min_x, b.min_y, b.max_x, b.max_y], 21)?;
         let (gt, rows, cols) = snapped_window(BBox::new(x0, y0, x1, y1).buffered(req.pad_m), res)?;
         debug!(rows, cols, res, epsg = req.dst_epsg, "warping DEM window");
+
+        let src = match single {
+            Some(src) => src,
+            None => {
+                // The window's lon/lat footprint, plus about 100 m so the
+                // bilinear warp has source pixels at its edges.
+                let g = gt.0;
+                let (wx1, wy0) = (g[0] + g[1] * cols as f64, g[3] + g[5] * rows as f64);
+                let to_wgs84 = CoordTransform::new(&dst_srs, &wgs84)?;
+                let [lo_x, lo_y, hi_x, hi_y] =
+                    to_wgs84.transform_bounds(&[g[0], wy0, wx1, g[3]], 21)?;
+                let footprint = BBox::new(lo_x, lo_y, hi_x, hi_y).buffered(0.001);
+                self.open_tiles(&footprint)?
+            }
+        };
 
         let mut dst = DriverManager::get_driver_by_name("MEM")?
             .create_with_band_type::<f32, _>("", cols, rows, 1)?;
@@ -624,6 +670,84 @@ mod tests {
              &bboxSR=32613&imageSR=32613&size=3,2&"
         ));
         assert!(url.ends_with("&mosaicRule=%7B%22where%22%3A%22beginyear%3D2024%22%7D"));
+    }
+
+    /// Write a lon/lat GeoTIFF of `cols` x `rows` pixels of 0.01° from
+    /// (west, north), valued by a smooth function of lon/lat.
+    fn write_degree_raster(path: &str, west: f64, north: f64, cols: usize, rows: usize) {
+        let mut ds = DriverManager::get_driver_by_name("GTiff")
+            .unwrap()
+            .create_with_band_type::<f32, _>(path, cols, rows, 1)
+            .unwrap();
+        ds.set_geo_transform(&[west, 0.01, 0.0, north, 0.0, -0.01])
+            .unwrap();
+        ds.set_spatial_ref(&SpatialRef::from_epsg(4326).unwrap())
+            .unwrap();
+        let data: Vec<f32> = (0..rows)
+            .flat_map(|r| {
+                (0..cols).map(move |c| {
+                    let lon = west + 0.01 * (c as f64 + 0.5);
+                    let lat = north - 0.01 * (r as f64 + 0.5);
+                    (3000.0 + 400.0 * (lon * 3.0).sin() + 250.0 * (lat * 5.0).cos()) as f32
+                })
+            })
+            .collect();
+        let mut buf = Buffer::new((cols, rows), data);
+        ds.rasterband(1)
+            .unwrap()
+            .write((0, 0), (cols, rows), &mut buf)
+            .unwrap();
+    }
+
+    #[test]
+    fn degree_tiles_mosaic_like_one_raster() {
+        // One raster over 107-105° W, 40-41° N, and the same split into the
+        // two 1° tiles n41w107 and n41w106.
+        write_degree_raster("/vsimem/mosaic_whole.tif", -107.0, 41.0, 200, 100);
+        write_degree_raster("/vsimem/mosaic_tiles/n41w107.tif", -107.0, 41.0, 100, 100);
+        write_degree_raster("/vsimem/mosaic_tiles/n41w106.tif", -106.0, 41.0, 100, 100);
+        let req = WindowRequest {
+            bbox_wgs84: BBox::new(-106.3, 40.3, -105.7, 40.7),
+            pad_m: 2000.0,
+            dst_epsg: 32613,
+            target_res_m: Some(250.0),
+            resampling: Default::default(),
+        };
+        let whole = GdalDem::new("/vsimem/mosaic_whole.tif")
+            .read_window(&req)
+            .unwrap();
+        let tiled = GdalDem::new("/vsimem/mosaic_tiles/{tile}.tif")
+            .read_window(&req)
+            .unwrap();
+        assert_eq!(tiled.transform, whole.transform);
+        assert_eq!(tiled.data, whole.data, "mosaic warps like one raster");
+        assert!(!tiled.data.iter().any(|&v| tiled.is_nodata(v)));
+
+        // A missing tile is an error that names it.
+        let req_far = WindowRequest {
+            bbox_wgs84: BBox::new(-104.5, 40.3, -104.4, 40.4),
+            ..req
+        };
+        let e = GdalDem::new("/vsimem/mosaic_tiles/{tile}.tif")
+            .read_window(&req_far)
+            .unwrap_err();
+        assert!(e.to_string().contains("n41w105"), "{e}");
+        // Degree tiles need a target resolution.
+        let no_res = WindowRequest {
+            target_res_m: None,
+            ..req_far
+        };
+        assert!(matches!(
+            GdalDem::new("/vsimem/mosaic_tiles/{tile}.tif").read_window(&no_res),
+            Err(IoError::NeedsTargetRes(_))
+        ));
+        for f in [
+            "/vsimem/mosaic_whole.tif",
+            "/vsimem/mosaic_tiles/n41w107.tif",
+            "/vsimem/mosaic_tiles/n41w106.tif",
+        ] {
+            gdal::vsi::unlink_mem_file(f).unwrap();
+        }
     }
 
     #[test]

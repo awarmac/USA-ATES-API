@@ -36,7 +36,7 @@ Query (point | polygon | route)
 
 Design rules:
 - **One code path.** Every query type reduces to the same steps: request extent → padded window → compute on the whole window → trim the pad → sample. Today this is `ates_pipeline::terrain`, which `point` and `area` both use. Classification runs on the full window before trimming, so smoothing and cluster steps see real neighbours.
-- **Tiling.** Large areas will use overlapping tiles with a halo, so release areas outside a tile still contribute. That arrives in M6; until then a single window is capped at `MAX_WINDOW_CELLS` (100 M).
+- **Tiling.** Up to a few hundred km² (the Increment 10 target) a region is still one padded window; its DEM may be a mosaic of 1° tiles. Tiled *compute* (overlapping tiles with a halo, so release areas outside a tile still contribute) waits for statewide scale; a single window is capped at `MAX_WINDOW_CELLS` (100 M, about 10 000 km² at 10 m).
 - **Projected CRS.** Reproject before computing slope. The analysis CRS is WGS 84 / UTM for the request centre (`ates_core::crs::utm_epsg_for`, regular 6° zones).
 - **Config.** Thresholds live in TOML with named region presets. Every output stamps the tool version, config path and hash, region, and DEM source.
 - **Swappable components.** `Classifier` is a trait (`ates_core::classify`), taking `TerrainLayers`. It has two implementations:
@@ -123,6 +123,9 @@ api/                    empty Python placeholders; left untouched. The API is cr
 | 39 | **Unknowns stay unknown**: no treeline → every band shown; undecoded `aspectElevations` code → `listed_here: null`; expired forecast → flagged | The CAIC code format has not been seen in season, and treeline values must be cited. Showing more bands errs towards more context, never less. |
 | 40 | Treeline is a **command-line value** (`--treeline LOWER,UPPER`), not config, for now | Config holds only cited values (decision 7), and no cited Colorado treeline elevations exist yet. Move it to region presets once they do. |
 | 41 | No date-time crate: `ates_forecast::time` parses ISO 8601 with a zone just to flag expired forecasts | `chrono`/`time` are not on the candidate list; the need is one comparison. |
+| 42 | Increment 10 targets **a few hundred km²** with **one padded window and a mosaicked DEM**, not tiled compute | Your choice of scale. Measured: the single window is fast and small enough at this size, and the real limit was the DEM being one 1° tile. Tiled compute (exact, since every Flow-Py output the build uses is a max, min or count) is deferred to statewide scale. |
+| 43 | `site.dem_path` may contain **`{tile}`**, expanded to the 1° × 1° tiles a window overlaps and mosaicked in memory with GDAL BuildVRT | 3DEP 1/3″ is published as 1° tiles. The mosaic warps bit for bit like a single raster (unit test), and Cameron Pass rebuilt through it is identical on every layer. |
+| 44 | Overhead keeps the **region-wide maximum cell count** as its reference, now recorded as `overhead_cell_count_max` in the manifest | Your choice, after asking which option gives the finest values: the busiest cell scores 100, so the region uses the full 0–100 range, as AutoATES's thresholds assume. A fixed reference can be added later to compare regions. |
 
 ## Terrain (Milestone 1)
 
@@ -497,6 +500,33 @@ Checked, 2026-10-06:
 - On the real Cameron Pass build with a **synthetic** forecast in CAIC's format: `ates route` and `/v1/route/evaluate` give identical context. A south-west below-treeline stretch shows the north/east wind slab as not listed and a problem with an undecoded code as undetermined; a north-facing stretch into near treeline shows both listed.
 - No real CAIC forecast has been parsed yet: it was out of season, and permission is pending.
 
+## Larger regions (Increment 10)
+
+```
+ates build-region --region cameron_pass --bbox=-106.05,40.42,-105.80,40.60 --pad-m 2000 --out-dir DIR
+```
+
+Target: a few hundred km² (your choice). At that size one padded window is still fast and small; the limit was the DEM, a single 1° tile. So:
+- **DEM mosaic.** `site.dem_path` may contain `{tile}`. `GdalDem` lists the 1° tiles the window's lon/lat footprint (plus about 100 m) overlaps (`ates_io::raster::degree_tiles`, 3DEP names such as `n41w106`), opens them and mosaics them in memory with GDAL BuildVRT before the usual warp. A missing tile is an error naming it. Degree tiles need `dem.target_res_m`.
+- **Overhead reference.** Still the window's maximum cell count (decision 44), now written to the manifest as `overhead_cell_count_max`.
+
+Checked, 2026-10-06:
+- Unit test: a 2° synthetic raster and the same split into two 1° tiles give a bit-identical window across 106° W.
+- Cameron Pass rebuilt through the `{tile}` path: identical class counts and identical checksums on `ates`, `overhead`, `dem`, `pra`, `fp_travel_angle` and `cell_counts`. `overhead_cell_count_max` = 8776.
+- **424 km² across 106° W** (tiles `n41w107` + `n41w106`), bbox above:
+
+| | |
+|---|---|
+| Region | 2 021 × 2 140 cells at 10 m (4.3 M; 2.3 × Cameron Pass), no nodata cells at the tile seam |
+| Release cells in window | 547 040 |
+| Pad | 2 000 m (longest runout 1 315 m, sufficient) |
+| Cells per class 0–4 | 0 / 3 511 399 / 468 657 / 312 089 / 32 795 |
+| `overhead_cell_count_max` | 8 773 (Cameron Pass alone: 8 776, showing the reference depends on extent) |
+| Time | 194 s: DEM 14 s, canopy 3.5 s, PRA 55 s, Flow-Py 100 s, classify 4 s |
+| Map tiles | 218 tiles, 164 KB |
+
+Scaling is roughly linear in cells, so about 1 000 km² should take around 8 minutes and fit comfortably in memory; the API holds about 10 layers of the region in memory (roughly 170 MB at 4.3 M cells).
+
 ## Provenance
 
 GeoTIFF dataset metadata:
@@ -561,7 +591,7 @@ Without GDAL at all, on CI or another machine:
 - **Golden region:** Bow Summit (from AutoATES test-data, UTM 11N).
 - **First US region: Cameron Pass** (preset `cameron_pass`):
   - The bbox `[-105.95, 40.45, -105.80, 40.58]` is approximate and still to confirm.
-  - DEM: USGS 3DEP 1/3″ seamless, tile `n41w106`, read over HTTP as a Cloud-Optimized GeoTIFF (`site.dem_path`). The analysis grid is UTM 13N at 10 m.
+  - DEM: USGS 3DEP 1/3″ seamless, read over HTTP as Cloud-Optimized GeoTIFF 1° tiles (`site.dem_path` with `{tile}`; the pass itself lies in `n41w106`). The analysis grid is UTM 13N at 10 m.
   - Forest: USFS Science Tree Canopy Cover, CONUS, v2025-6, year 2024 (`site.forest_service`, `forest_where = "beginyear=2024"`). Values 254 and 255 are nodata. The source is 30 m, resampled to 10 m by the server.
 
 ## Roadmap: zones, routes, CAIC, API
@@ -607,7 +637,8 @@ Without GDAL at all, on CI or another machine:
 - **(Owner) Research the canopy-cover thresholds.** Cameron Pass uses Toft et al. (2024) Table 2's 20/55/75, while the code has 10/50/65. Find out how each was derived.
 - How the Sykes run scaled basal area into `forest_scaled.tif`. We use canopy cover / 100 for Cameron Pass.
 - `prep.pad_m`: the region build measures runout instead. Cameron Pass needed 2 000 m (longest runout 1 315 m).
-- Overhead exposure is normalised by the window's maximum cell count, as in AutoATES. So tiles or other extents would scale differently. Decide on a fixed reference before tiling.
+- Overhead exposure is normalised by the region's maximum cell count (decision 44, recorded in the manifest), so overhead values from different regions are not directly comparable. If that matters, add an optional fixed `cc_max` to config.
+- Statewide scale: tiled compute with halos, resumable builds, and API reads of COG windows instead of whole regions in memory.
 - Cameron Pass: confirm the bbox, compare with an expert ATES map, and find the CAIC area id (in season).
 - Bow Summit full-chain parity: that run's DEM was int16, but our Flow-Py port reproduces float32 arithmetic. Its input DEM and `forest_scaled.tif` are also not in the OSF archive.
 - Regional tuning of AutoATES thresholds for Colorado. For now they are the authors' defaults. This includes the PRA parameters:
@@ -633,4 +664,4 @@ Without GDAL at all, on CI or another machine:
 8. **HTTP API** — done (Increment 7). `ates-api` serves regions, points, areas, route evaluation and the COGs.
 9. **Frontend MVP** — done (Increment 8). PMTiles WebP overlay, point popups, route drawing and upload.
 10. **Forecast context** — done offline (Increment 9). `ates-forecast` adds CAIC danger and problem context to route reports, the CLI, the API and the map, from saved files. Live fetching waits for CAIC's permission; the problem-code format waits for an in-season sample.
-11. Next: scaling beyond one window (Increment 10).
+11. **Larger regions** — done (Increment 10). DEM mosaics of 1° tiles let a region cross degree lines; a 424 km² region builds in about 3 minutes. Tiled compute is deferred to statewide scale.

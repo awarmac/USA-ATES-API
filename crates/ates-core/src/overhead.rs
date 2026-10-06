@@ -26,6 +26,16 @@ use ndarray::{Array2, Zip};
 
 use crate::classify::ClassifyError;
 
+/// The default normalisation reference: the largest finite cell count.
+pub fn max_cell_count(cell_counts: &Array2<f32>) -> f64 {
+    cell_counts
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(0.0_f32, f32::max)
+        .into()
+}
+
 /// Overhead exposure 0-100 from Flow-Py `cell_counts` and `z_delta`.
 /// `cc_max` defaults to the largest cell count in `cell_counts`.
 pub fn overhead(
@@ -40,14 +50,7 @@ pub fn overhead(
     if max_z.is_nan() || max_z <= 0.0 {
         return Err(ClassifyError::BadParam("max_z must be positive".into()));
     }
-    let cc_max = cc_max.unwrap_or_else(|| {
-        cell_counts
-            .iter()
-            .copied()
-            .filter(|v| v.is_finite())
-            .fold(0.0_f32, f32::max)
-            .into()
-    });
+    let cc_max = cc_max.unwrap_or_else(|| max_cell_count(cell_counts));
     // With at most one path anywhere, ln(cc_max) is 0: the counts carry no
     // ranking, so they contribute 0.
     let ln_max = if cc_max > 1.0 {

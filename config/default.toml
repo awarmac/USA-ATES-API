@@ -125,8 +125,10 @@ flowpy.forest = "pcc_fraction"
 [regions.cameron_pass.site]
 # Approximate area of interest around the pass (to confirm).
 bbox = [-105.95, 40.45, -105.80, 40.58]
-dem_source = "USGS 3DEP 1/3 arc-second seamless DEM, tile n41w106 (Cloud-Optimized GeoTIFF)"
-dem_path = "/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/n41w106/USGS_13_n41w106.tif"
+dem_source = "USGS 3DEP 1/3 arc-second seamless DEM, 1x1 degree tiles (Cloud-Optimized GeoTIFF)"
+# {tile} expands to the 1x1 degree tiles a window overlaps (n41w106 covers
+# 40-41 N, 106-105 W), mosaicked in memory, so --bbox may cross degree lines.
+dem_path = "/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/{tile}/USGS_13_{tile}.tif"
 forest_source = "USFS Science Tree Canopy Cover, CONUS, 30 m, v2025-6, year 2024"
 forest_service = "https://imagery.geoplatform.gov/iipp/rest/services/Vegetation/USFS_EDW_Science_TCC_CONUS/ImageServer"
 forest_where = "beginyear=2024"

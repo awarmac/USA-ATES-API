@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use ates_core::autoates::{FillNodata, OutputMode};
 use ates_core::crs::utm_epsg_for;
-use ates_core::overhead::overhead;
+use ates_core::overhead::{max_cell_count, overhead};
 use ates_core::{BBox, Grid};
 use ates_io::{GridSource, RasterSource, WindowRequest};
 
@@ -79,6 +79,9 @@ pub struct RegionBuild {
     pub pad_sufficient: bool,
     /// Release cells in the padded window.
     pub release_cells: usize,
+    /// The cell count that overhead exposure was normalised by (the
+    /// padded window's maximum), so builds can be compared.
+    pub overhead_cc_max: f64,
     pub timings: Vec<(&'static str, Duration)>,
 }
 
@@ -156,7 +159,15 @@ pub fn build_region(
         }
 
         let t = Instant::now();
-        let ovh = overhead(&flow.cell_counts.data, &flow.z_delta.data, max_z, None)?;
+        // Region-wide reference, as AutoATES: the busiest cell scores 100,
+        // so the region's cells use the full 0-100 range.
+        let cc_max = max_cell_count(&flow.cell_counts.data);
+        let ovh = overhead(
+            &flow.cell_counts.data,
+            &flow.z_delta.data,
+            max_z,
+            Some(cc_max),
+        )?;
         let ovh = Grid {
             data: ovh,
             transform: dem.transform,
@@ -190,6 +201,7 @@ pub fn build_region(
             attempts,
             pad_sufficient,
             release_cells,
+            overhead_cc_max: cc_max,
             timings,
         });
     }

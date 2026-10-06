@@ -179,10 +179,61 @@ pub fn check_aligned(bands: &[Band<'_>]) -> Result<(), IoError> {
     Ok(())
 }
 
+/// Placeholder in a DEM path for the names of 1° × 1° tiles, e.g.
+/// `.../13/TIFF/current/{tile}/USGS_13_{tile}.tif` for USGS 3DEP.
+pub const TILE_PLACEHOLDER: &str = "{tile}";
+
+/// Names of the 1° × 1° tiles covering a WGS 84 lon/lat box, in the USGS
+/// 3DEP style: the tile's north edge and west edge, e.g. `n41w106` for
+/// 40–41° N, 106–105° W. Edges lying exactly on a degree line do not pull
+/// in the neighbouring tile. Ordered north to south, west to east.
+pub fn degree_tiles(b: &BBox) -> Vec<String> {
+    let span = |lo: f64, hi: f64| {
+        let first = lo.floor() as i32;
+        let last = ((hi.ceil() as i32) - 1).max(first);
+        first..=last
+    };
+    let mut out = Vec::new();
+    for lat in span(b.min_y, b.max_y).rev() {
+        let north = lat + 1;
+        let ns = if north >= 0 { 'n' } else { 's' };
+        for lon in span(b.min_x, b.max_x) {
+            let ew = if lon < 0 { 'w' } else { 'e' };
+            out.push(format!(
+                "{ns}{:02}{ew}{:03}",
+                north.unsigned_abs(),
+                lon.unsigned_abs()
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ndarray::Array2;
+
+    #[test]
+    fn degree_tile_names() {
+        // Cameron Pass, inside one tile.
+        let one = BBox::new(-105.95, 40.45, -105.80, 40.58);
+        assert_eq!(degree_tiles(&one), ["n41w106"]);
+        // Across 106° W and 41° N.
+        let four = BBox::new(-106.2, 40.8, -105.9, 41.1);
+        assert_eq!(
+            degree_tiles(&four),
+            ["n42w107", "n42w106", "n41w107", "n41w106"]
+        );
+        // A box ending exactly on a degree line stays in one tile.
+        let edge = BBox::new(-106.0, 40.0, -105.0, 41.0);
+        assert_eq!(degree_tiles(&edge), ["n41w106"]);
+        assert_eq!(
+            degree_tiles(&BBox::new(-99.5, 35.2, -99.4, 35.3)),
+            ["n36w100"]
+        );
+        assert_eq!(degree_tiles(&BBox::new(7.5, -0.5, 7.6, -0.4)), ["n00e007"]);
+    }
 
     fn grid(rows: usize, epsg: u32) -> Grid<f32> {
         Grid::new(

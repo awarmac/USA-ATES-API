@@ -758,6 +758,8 @@ fn run_build_region(a: &BuildRegionArgs) -> Result<(), Box<dyn Error>> {
          release_cells_in_window = {release}\n\
          pad_sufficient = {pad_ok}\n\
          pad_attempts = [{attempts}]\n\
+         # Overhead exposure = mean of 100*ln(cells)/ln(this) and 100*z_delta/max_z.\n\
+         overhead_cell_count_max = {cc_max}\n\
          cells_per_class_0_to_4 = {classes:?}\n\
          nodata_cells = {nodata}\n\n\
          [flowpy]\nalpha_deg = {alpha}\nexponent = {exp}\nflux_threshold = {flux}\nmax_z_delta = {maxz}\n\
@@ -784,6 +786,7 @@ fn run_build_region(a: &BuildRegionArgs) -> Result<(), Box<dyn Error>> {
         release = b.release_cells,
         pad_ok = b.pad_sufficient,
         attempts = attempts.join(", "),
+        cc_max = b.overhead_cc_max,
         classes = &counts[..5],
         nodata = counts[5],
         alpha = fp.alpha_deg,
