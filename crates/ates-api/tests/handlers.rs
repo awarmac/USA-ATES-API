@@ -6,12 +6,15 @@ use std::sync::Arc;
 
 use ates_api::regions::Region;
 use ates_api::{
-    AppState, PointQuery, RegionQuery, area, health, list_regions, point, route_evaluate,
+    AppState, ForecastState, PointQuery, RegionQuery, area, health, list_forecasts, list_regions,
+    point, route_evaluate, zone_forecast,
 };
 use ates_core::{Crs, GeoTransform, Grid};
+use ates_forecast::{Forecasts, Treeline, caic};
 use ates_io::gdal_backend::GdalProjector;
 use ates_io::{DISCLAIMER, Projector};
 use ates_pipeline::route::RegionGrids;
+use axum::extract::Path;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use ndarray::Array2;
@@ -22,6 +25,10 @@ const CENTRE: (f64, f64) = (-105.8917, 40.5208);
 /// 20 x 20 cells of 10 m centred on Cameron Pass: west half class 1, east
 /// half class 3; release area and avalanche path in the east half.
 fn state() -> Arc<AppState> {
+    state_with(None)
+}
+
+fn state_with(forecast: Option<ForecastState>) -> Arc<AppState> {
     let (cx, cy) = GdalProjector.lonlat_to(CENTRE.0, CENTRE.1, EPSG).unwrap();
     let gt = GeoTransform::north_up(cx - 100.0, cy + 100.0, 10.0, 10.0);
     let i16_grid = |f: &dyn Fn(usize, usize) -> i16| {
@@ -59,6 +66,7 @@ fn state() -> Arc<AppState> {
         regions: vec![region],
         data_dir: PathBuf::from("does-not-exist"),
         web_dir: None,
+        forecast,
     })
 }
 
@@ -235,4 +243,77 @@ async fn route_geojson_and_gpx() {
     .await
     .unwrap_err();
     assert_eq!(e.status, StatusCode::BAD_REQUEST);
+}
+
+/// A synthetic CAIC-shaped forecast (not CAIC data) whose one zone covers
+/// the test region: Considerable above treeline, a west-facing alpine
+/// wind slab.
+fn forecast() -> ForecastState {
+    let products = r#"[{"id": "f1", "type": "avalancheforecast", "areaId": "area-1",
+        "title": "Test zone", "polygons": ["poly-a"],
+        "issueDateTime": "2026-12-01T23:00:00Z", "expiryDateTime": "2099-12-02T23:00:00Z",
+        "dangerRatings": {"days": [{"alp": "considerable", "tln": "moderate", "btl": "low"}]},
+        "avalancheProblems": {"days": [[{"type": "windSlab", "aspectElevations": ["w_alp"],
+            "likelihood": "likely", "expectedSize": {"min": "1", "max": "2"}}]]}}]"#;
+    let areas = r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "id": "poly-a",
+        "properties": {}, "geometry": {"type": "Polygon",
+        "coordinates": [[[-106,40],[-105,40],[-105,41],[-106,41],[-106,40]]]}}]}"#;
+    ForecastState {
+        forecasts: Forecasts {
+            source: caic::source(None),
+            forecasts: caic::parse_products(products).unwrap(),
+            zones: caic::parse_areas(areas).unwrap(),
+        },
+        // The DEM rises 3100-3214 m from west to east.
+        treeline: Some(Treeline::new(3150.0, 3180.0).unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn route_with_forecast_context() {
+    let s = state_with(Some(forecast()));
+    let (a, b) = (lonlat(-95.0, 5.0), lonlat(95.0, 5.0));
+    let line = serde_json::json!({
+        "type": "LineString", "coordinates": [[a.0, a.1], [b.0, b.1]]
+    })
+    .to_string();
+    let r = route_evaluate(
+        State(s.clone()),
+        Query(RegionQuery::default()),
+        HeaderMap::new(),
+        line,
+    )
+    .await
+    .unwrap()
+    .0;
+    // The ATES result is unchanged by the forecast.
+    assert_eq!(r["summary"]["max_class"], 3);
+    let fc = &r["summary"]["forecast"];
+    assert_eq!(fc["zones"][0]["area_id"], "area-1");
+    assert_eq!(fc["zones"][0]["expired"], false);
+    assert_eq!(fc["highest_danger"]["level"], 3);
+    let east = &r["features"][1]["properties"];
+    assert_eq!(east["ates_class"], 3);
+    let c = &east["forecast_context"][0];
+    assert_eq!(c["bands"], serde_json::json!(["tln", "alp"]));
+    assert_eq!(c["problems"][0]["listed_here"], true);
+    let west = &r["features"][0]["properties"]["forecast_context"][0];
+    assert_eq!(west["highest_danger"]["level"], 2, "btl/tln only");
+    assert_eq!(west["problems"][0]["listed_here"], false);
+
+    let list = list_forecasts(State(s.clone())).await.unwrap().0;
+    assert_eq!(list["forecasts"][0]["id"], "f1");
+    assert_eq!(list["treeline_m"], serde_json::json!([3150.0, 3180.0]));
+    let one = zone_forecast(State(s.clone()), Path("poly-a".into()))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(one["forecast"]["days"][0]["danger"]["alp"]["level"], 3);
+    let e = zone_forecast(State(s), Path("nowhere".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, StatusCode::NOT_FOUND);
+
+    let e = list_forecasts(State(state())).await.unwrap_err();
+    assert_eq!(e.status, StatusCode::NOT_FOUND, "no forecasts loaded");
 }

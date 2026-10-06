@@ -9,7 +9,9 @@
 //! | GET | `/v1/regions` | | regions, parameters, file URLs |
 //! | GET | `/v1/point` | `lon`, `lat`, optional `region` | layers at the point |
 //! | POST | `/v1/area` | GeoJSON (Multi)Polygon; optional `?region=` | area per class |
-//! | POST | `/v1/route/evaluate` | GeoJSON line or GPX; optional `?region=` | GeoJSON report |
+//! | POST | `/v1/route/evaluate` | GeoJSON line or GPX; optional `?region=`, `?forecast_day=` | GeoJSON report, with forecast context when forecasts are loaded |
+//! | GET | `/v1/forecast` | | loaded forecast zones (404 without `--caic-products`) |
+//! | GET | `/v1/forecast/{zone}` | | one zone forecast, by product, area or polygon id |
 //! | GET | `/v1/files/{region}/{file}` | | the build's COGs and `ates.pmtiles` map tiles (range requests) |
 //! | GET | `/` | | the built frontend, with `--web-dir` |
 //!
@@ -27,12 +29,14 @@ use std::sync::Arc;
 use ates_core::Grid;
 use ates_core::area::{Polygon, class_areas};
 use ates_core::route::Aspect;
+use ates_forecast::time::now_unix;
+use ates_forecast::{ContextOptions, FORECAST_NOTICE, Forecasts, Treeline, annotate_route_report};
 use ates_io::gdal_backend::GdalProjector;
 use ates_io::route_file::{parse_geojson, parse_geojson_polygons, parse_gpx};
 use ates_io::{DISCLAIMER, Projector};
 use ates_pipeline::TOOL_VERSION;
 use ates_pipeline::route::{ATES_CLASS_NAMES, evaluate_route, report_geojson};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -59,6 +63,17 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Built frontend (`web/dist`) served at `/`, if any.
     pub web_dir: Option<PathBuf>,
+    /// Forecasts loaded from saved files at startup, if any. They are
+    /// shown as context and never change an ATES class.
+    pub forecast: Option<ForecastState>,
+}
+
+/// Loaded forecasts and how to place stretches in elevation bands.
+#[derive(Debug)]
+pub struct ForecastState {
+    pub forecasts: Forecasts,
+    /// Treeline for every loaded zone; `None` shows all bands.
+    pub treeline: Option<Treeline>,
 }
 
 /// An error with an HTTP status, returned as JSON.
@@ -116,6 +131,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/point", get(point))
         .route("/v1/area", post(area))
         .route("/v1/route/evaluate", post(route_evaluate))
+        .route("/v1/forecast", get(list_forecasts))
+        .route("/v1/forecast/{zone}", get(zone_forecast))
         .nest_service("/v1/files", ServeDir::new(&state.data_dir));
     if let Some(web) = &state.web_dir {
         // Revalidate the app on every load so a rebuilt frontend is never
@@ -318,10 +335,12 @@ pub async fn point(
     }))
 }
 
-/// Optional `?region=` on POST endpoints.
+/// Optional `?region=` on POST endpoints, and `?forecast_day=` (0 is the
+/// issue day) on route evaluation.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RegionQuery {
     pub region: Option<String>,
+    pub forecast_day: Option<usize>,
 }
 
 pub async fn area(
@@ -428,9 +447,69 @@ pub async fn route_evaluate(
             "provenance".into(),
             serde_json::to_value(provenance(r)).map_err(|e| ApiError::internal(e.to_string()))?,
         );
-        report_geojson(&result, &GdalProjector, meta).map_err(|e| ApiError::internal(e.to_string()))
+        let mut gj = report_geojson(&result, &GdalProjector, meta)
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if let Some(fc) = &state2.forecast {
+            let opts = ContextOptions {
+                day: q.forecast_day.unwrap_or(0),
+                treeline: fc.treeline,
+            };
+            annotate_route_report(&mut gj, &fc.forecasts, &opts, now_unix());
+        }
+        Ok(gj)
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))??;
     Ok(Json(report))
+}
+
+fn loaded_forecast(state: &AppState) -> ApiResult<&ForecastState> {
+    state.forecast.as_ref().ok_or_else(|| {
+        ApiError::not_found(
+            "no forecasts loaded; start ates-api with --caic-products and --caic-areas",
+        )
+    })
+}
+
+fn forecast_meta(fc: &ForecastState) -> Value {
+    let s = &fc.forecasts.source;
+    json!({
+        "source": {"name": s.name, "url": s.url, "retrieved": s.retrieved},
+        "notice": FORECAST_NOTICE,
+        "treeline_m": fc.treeline.map(|t| [t.lower_m, t.upper_m]),
+        "disclaimer": DISCLAIMER,
+    })
+}
+
+/// The loaded forecast zones, without their days.
+pub async fn list_forecasts(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
+    let fc = loaded_forecast(&state)?;
+    let now = now_unix();
+    let mut v = forecast_meta(fc);
+    v["forecasts"] = fc
+        .forecasts
+        .forecasts
+        .iter()
+        .map(|f| f.header_json(now))
+        .collect();
+    Ok(Json(v))
+}
+
+/// One zone forecast with its days, by product id, area id or zone
+/// polygon id.
+pub async fn zone_forecast(
+    State(state): State<Arc<AppState>>,
+    Path(zone): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let fc = loaded_forecast(&state)?;
+    let f = fc
+        .forecasts
+        .forecasts
+        .iter()
+        .find(|f| f.id == zone)
+        .or_else(|| fc.forecasts.forecast_for(&zone))
+        .ok_or_else(|| ApiError::not_found(format!("no forecast for zone `{zone}`")))?;
+    let mut v = forecast_meta(fc);
+    v["forecast"] = f.to_json(now_unix());
+    Ok(Json(v))
 }

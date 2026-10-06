@@ -9,7 +9,8 @@
 //! - `build-region`: the whole chain for a configured region, fetching its
 //!   DEM and forest data, written as Cloud-Optimized GeoTIFFs.
 //! - `sample`: read a raster (e.g. a region build) at one point.
-//! - `route`: evaluate a GPX or GeoJSON route against a region build.
+//! - `route`: evaluate a GPX or GeoJSON route against a region build, with
+//!   optional forecast context from saved CAIC files.
 //! - `build-tiles`: render a region build's classes as web map tiles
 //!   (PMTiles of lossless WebP).
 //! - `check-slope`: compare our slope/aspect with GDAL's gdaldem.
@@ -22,6 +23,8 @@ use ates_core::autoates::OutputMode;
 use ates_core::crs::utm_epsg_for;
 use ates_core::terrain::{aspect_deg, slope_deg};
 use ates_core::{BBox, Grid};
+use ates_forecast::time::now_unix;
+use ates_forecast::{CaicFiles, ContextOptions, ForecastProvider, Treeline, annotate_route_report};
 use ates_io::gdal_backend::{
     CogWriter, GdalDem, GdalFill, GdalProjector, GeoTiffWriter, ImageServerSource,
     gdaldem_slope_aspect, read_grid,
@@ -259,6 +262,25 @@ struct RouteArgs {
     /// Write the full report as GeoJSON here.
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Saved CAIC `products/all` JSON, for forecast context (never fetched).
+    #[arg(long, requires = "caic_areas")]
+    caic_products: Option<PathBuf>,
+    /// Saved CAIC `products/all/area` GeoJSON (forecast zone polygons).
+    #[arg(long, requires = "caic_products")]
+    caic_areas: Option<PathBuf>,
+    /// Forecast day for the context: 0 is the issue day.
+    #[arg(long, default_value_t = 0)]
+    forecast_day: usize,
+    /// Treeline as LOWER,UPPER metres: below LOWER is below treeline, above
+    /// UPPER is above. Without it, every elevation band is shown.
+    #[arg(long, value_parser = parse_treeline)]
+    treeline: Option<Treeline>,
+}
+
+fn parse_treeline(s: &str) -> Result<Treeline, String> {
+    let (lo, hi) = s.split_once(',').ok_or("expected LOWER,UPPER in metres")?;
+    let num = |v: &str| v.trim().parse::<f64>().map_err(|e| format!("{v}: {e}"));
+    Treeline::new(num(lo)?, num(hi)?)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -886,7 +908,18 @@ fn run_route(a: &RouteArgs) -> Result<(), Box<dyn Error>> {
     }
     println!("note: {}", ates_io::DISCLAIMER);
 
-    if let Some(out) = &a.out {
+    let forecasts = match (&a.caic_products, &a.caic_areas) {
+        (Some(products), Some(areas)) => Some(
+            CaicFiles {
+                products: products.clone(),
+                areas: areas.clone(),
+                retrieved: None,
+            }
+            .load()?,
+        ),
+        _ => None,
+    };
+    if a.out.is_some() || forecasts.is_some() {
         let mut meta = serde_json::Map::new();
         meta.insert(
             "route_file".into(),
@@ -901,11 +934,102 @@ fn run_route(a: &RouteArgs) -> Result<(), Box<dyn Error>> {
         {
             meta.insert("region_manifest".into(), serde_json::to_value(manifest)?);
         }
-        let gj = report_geojson(&result, &GdalProjector, meta)?;
-        std::fs::write(out, serde_json::to_string_pretty(&gj)?)?;
-        eprintln!("wrote {}", out.display());
+        let mut gj = report_geojson(&result, &GdalProjector, meta)?;
+        if let Some(fc) = &forecasts {
+            let opts = ContextOptions {
+                day: a.forecast_day,
+                treeline: a.treeline,
+            };
+            annotate_route_report(&mut gj, fc, &opts, now_unix());
+            print_forecast_context(&gj);
+        }
+        if let Some(out) = &a.out {
+            std::fs::write(out, serde_json::to_string_pretty(&gj)?)?;
+            eprintln!("wrote {}", out.display());
+        }
     }
     Ok(())
+}
+
+/// Print the forecast context of an annotated route report.
+fn print_forecast_context(gj: &serde_json::Value) {
+    let fc = &gj["summary"]["forecast"];
+    println!(
+        "forecast context ({}):",
+        fc["source"]["name"].as_str().unwrap_or("?")
+    );
+    let zones = fc["zones"].as_array().map_or(&[][..], Vec::as_slice);
+    if zones.is_empty() {
+        println!("  the route is outside every forecast zone in the files");
+    }
+    for z in zones {
+        println!(
+            "  zone {} ({}): issued {}, expires {}{}",
+            z["title"].as_str().unwrap_or("-"),
+            z["area_id"].as_str().unwrap_or("-"),
+            z["issued"].as_str().unwrap_or("-"),
+            z["expires"].as_str().unwrap_or("-"),
+            if z["expired"] == true {
+                "  ** EXPIRED **"
+            } else {
+                ""
+            },
+        );
+    }
+    if let Some(m) = fc["no_zone_m"].as_f64().filter(|m| *m > 0.0) {
+        println!("  {m:.0} m of the route is outside every zone");
+    }
+    if fc["treeline_m"].is_null() {
+        println!("  no --treeline given: each stretch shows all elevation bands");
+    }
+    if let Some(name) = fc["highest_danger"]["name"].as_str() {
+        println!("  highest danger along the route: {name}");
+    }
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["properties"];
+        if p["ates_class"].as_i64().is_none_or(|c| c < 3) {
+            continue;
+        }
+        for c in p["forecast_context"].as_array().into_iter().flatten() {
+            let listed: Vec<&str> = c["problems"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|pr| pr["listed_here"] == true)
+                .filter_map(|pr| pr["type"].as_str())
+                .collect();
+            let unclear = c["problems"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|pr| pr["listed_here"].is_null())
+                .count();
+            println!(
+                "    {:>6.0} m class {}: bands {}, highest danger {}, problems listed here: {}{}",
+                p["start_m"].as_f64().unwrap_or(0.0),
+                p["ates_class"],
+                c["bands"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b.as_str())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                c["highest_danger"]["name"].as_str().unwrap_or("none"),
+                if listed.is_empty() {
+                    "none".into()
+                } else {
+                    listed.join(", ")
+                },
+                if unclear > 0 {
+                    format!(" ({unclear} undetermined)")
+                } else {
+                    String::new()
+                },
+            );
+        }
+    }
+    println!("note: {}", ates_forecast::FORECAST_NOTICE);
 }
 
 /// Render `dir/ates.tif` into `dir/ates.pmtiles`.
@@ -1224,6 +1348,17 @@ mod tests {
             Cli::try_parse_from(&ok[..4]).is_err(),
             "--region or --region-dir is required"
         );
+        let fc = [
+            &ok[..],
+            &["--caic-products", "p.json", "--caic-areas", "a.geojson"],
+            &["--treeline", "3300,3500", "--forecast-day", "1"],
+        ]
+        .concat();
+        assert!(Cli::try_parse_from(fc).is_ok());
+        let half = [&ok[..], &["--caic-products", "p.json"]].concat();
+        assert!(Cli::try_parse_from(half).is_err(), "products need areas");
+        let bad = [&ok[..], &["--treeline", "3500,3300"]].concat();
+        assert!(Cli::try_parse_from(bad).is_err(), "lower above upper");
     }
 
     #[test]

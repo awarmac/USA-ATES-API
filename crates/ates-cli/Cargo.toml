@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 ates-core.workspace = true
+ates-forecast.workspace = true
 ates-io = { workspace = true, features = ["gdal"] }
 ates-pipeline.workspace = true
 clap.workspace = true

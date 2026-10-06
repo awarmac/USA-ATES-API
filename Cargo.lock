@@ -66,6 +66,7 @@ name = "ates-api"
 version = "0.1.0"
 dependencies = [
  "ates-core",
+ "ates-forecast",
  "ates-io",
  "ates-pipeline",
  "axum",
@@ -83,6 +84,7 @@ name = "ates-cli"
 version = "0.1.0"
 dependencies = [
  "ates-core",
+ "ates-forecast",
  "ates-io",
  "ates-pipeline",
  "clap",
@@ -97,6 +99,15 @@ version = "0.1.0"
 dependencies = [
  "ndarray",
  "rayon",
+ "thiserror",
+]
+
+[[package]]
+name = "ates-forecast"
+version = "0.1.0"
+dependencies = [
+ "ates-core",
+ "serde_json",
  "thiserror",
 ]
 

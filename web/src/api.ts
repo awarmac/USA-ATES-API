@@ -61,6 +61,53 @@ export interface StretchProperties {
   release_area_m: number;
   avalanche_path_m: number;
   max_overhead: number | null;
+  /** Present when the server has forecasts loaded; one entry per zone. */
+  forecast_context?: StretchForecast[];
+}
+
+/** A rating on the danger scale; `level` is null when not rated. */
+export interface DangerValue {
+  level: number | null;
+  name: string;
+}
+
+export interface ForecastZone {
+  id: string;
+  area_id: string;
+  title: string | null;
+  issued: string | null;
+  expires: string | null;
+  /** null when the expiry time is unknown. */
+  expired: boolean | null;
+}
+
+export interface StretchForecast extends ForecastZone {
+  bands: ("btl" | "tln" | "alp")[];
+  bands_from: string;
+  day: string | null;
+  note?: string;
+  danger?: Record<string, DangerValue>;
+  highest_danger?: DangerValue | null;
+  problems?: {
+    type: string;
+    likelihood: string | null;
+    size_min: string | null;
+    size_max: string | null;
+    /** true listed, false not listed, null cannot be told. */
+    listed_here: boolean | null;
+    matched_locations: string[];
+    undecoded_locations: string[];
+  }[];
+}
+
+export interface ForecastSummary {
+  source: { name: string; url: string; retrieved: string | null };
+  notice: string;
+  day: number;
+  treeline_m: [number, number] | null;
+  zones: ForecastZone[];
+  highest_danger: DangerValue | null;
+  no_zone_m: number;
 }
 
 export interface RouteSummary {
@@ -75,6 +122,8 @@ export interface RouteSummary {
   disclaimer: string;
   region: string;
   provenance: Provenance;
+  /** Present when the server has forecasts loaded. */
+  forecast?: ForecastSummary;
 }
 
 export interface RouteReport {

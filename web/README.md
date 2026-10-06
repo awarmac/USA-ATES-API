@@ -6,6 +6,8 @@ basemap. It is not an avalanche forecast.
 You can:
 - click anywhere for terrain details (`/v1/point`);
 - draw a route or upload a GPX/GeoJSON file for a route evaluation (`/v1/route/evaluate`).
+  When `ates-api` runs with saved forecast files (`--caic-products`, `--caic-areas`), the route
+  panel also shows forecast context: danger and listed problems per stretch. It never changes a class.
 
 The stack is plain TypeScript, Vite, MapLibre GL and the `pmtiles` library. The ATES overlay is a PMTiles archive of lossless WebP tiles, written by `ates build-tiles` (or `ates build-region`) and served by `ates-api` under `/v1/files/<region>/ates.pmtiles`.
 

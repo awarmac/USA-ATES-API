@@ -6,6 +6,7 @@ members = [
     "crates/ates-pipeline",
     "crates/ates-cli",
     "crates/ates-api",
+    "crates/ates-forecast",
 ]
 
 [workspace.package]
@@ -19,6 +20,7 @@ repository = "https://github.com/awarmac/USA-ATES-API"
 ates-core = { path = "crates/ates-core" }
 ates-io = { path = "crates/ates-io", default-features = false }
 ates-pipeline = { path = "crates/ates-pipeline" }
+ates-forecast = { path = "crates/ates-forecast" }
 ndarray = "0.17"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

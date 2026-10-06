@@ -61,6 +61,8 @@ crates/
   ates-pipeline/        config loading/merging, orchestration, comparison helper
   ates-cli/             `ates` binary (clap)
   ates-api/             `ates-api` HTTP server (axum) over region builds
+  ates-forecast/        forecast context (CAIC files): model, parser, zones,
+                        treeline bands, route annotation; no network client
 web/                    map frontend: TypeScript + Vite + MapLibre GL + pmtiles
 tests/fixtures/         small DEM clips + reference outputs (see their READMEs);
                         bow_summit/autoates/ = AutoATES inputs and every intermediate output
@@ -116,6 +118,11 @@ api/                    empty Python placeholders; left untouched. The API is cr
 | 34 | PMTiles and tile rendering are **written in-house**: `ates_io::pmtiles` (writer), `ates_pipeline::tiles` (nearest-neighbour rendering), and WebP through GDAL's driver | No new Rust dependencies. The archive is validated with the reference `pmtiles` JS library (`web/scripts/check-pmtiles.mjs`). Only a root directory is written, which holds a few thousand tiles; larger pyramids need leaf directories. |
 | 35 | Frontend: **plain TypeScript + Vite + MapLibre GL + pmtiles** in `web/`, with the USGS Topo basemap (public domain) | Your choice (Increment 8). In development, Vite proxies `/v1`; in production, `ates-api --web-dir web/dist` serves it, so everything shares one origin. |
 | 36 | Overlay colours: class 1 green, 2 blue, 3 black, 4 red, semi-transparent; class 0 transparent | Classes 1–3 follow the usual ATES map convention; red for class 4 is our choice. The legend lives in the PMTiles metadata, so the frontend never hard-codes it. |
+| 37 | Forecasts are **read from saved files only**; `ates-forecast` has no network client and no new dependencies | CAIC's terms of use (checked 2026-10-06) prohibit robots and data mining and require written permission to reproduce its material. A fetching `ForecastProvider` waits for that permission, and for your approval of an HTTP client crate. |
+| 38 | Forecast context is **attached to the existing route report**, per stretch, and never changes a class or length | Roadmap principle: the forecast never silently re-weights a route. `annotate_route_report` works on the GeoJSON report, so `ates-core::route` is unchanged. |
+| 39 | **Unknowns stay unknown**: no treeline → every band shown; undecoded `aspectElevations` code → `listed_here: null`; expired forecast → flagged | The CAIC code format has not been seen in season, and treeline values must be cited. Showing more bands errs towards more context, never less. |
+| 40 | Treeline is a **command-line value** (`--treeline LOWER,UPPER`), not config, for now | Config holds only cited values (decision 7), and no cited Colorado treeline elevations exist yet. Move it to region presets once they do. |
+| 41 | No date-time crate: `ates_forecast::time` parses ISO 8601 with a zone just to flag expired forecasts | `chrono`/`time` are not on the candidate list; the need is one comparison. |
 
 ## Terrain (Milestone 1)
 
@@ -455,6 +462,41 @@ Checked:
 
 Not yet checked: **GPX/GeoJSON upload** in the browser. The CLI and API paths are tested; the upload control is not.
 
+## Forecast context (Increment 9)
+
+```
+ates route --region cameron_pass --file r.gpx \
+    --caic-products products.json --caic-areas areas.geojson [--treeline 3300,3500] [--forecast-day 0]
+ates-api ... --caic-products products.json --caic-areas areas.geojson [--treeline L,U] [--caic-retrieved TEXT]
+```
+
+`ates-forecast` attaches **forecast context** to a route report. It never changes a class, a length or the report's ATES summary.
+
+**Input.** Two CAIC documents saved by hand (see "CAIC data access" below); nothing is fetched:
+- `products/all`: forecasts. Only `type: "avalancheforecast"` is read: `id`, `areaId`, `title`, `polygons`, `issueDateTime`, `expiryDateTime`, `dangerRatings.days[].{alp,tln,btl,date}` and `avalancheProblems.days[][]` with `type`, `aspectElevations`, `likelihood` and `expectedSize.{min,max}`. Field names come from the 2026-10-02 probe and the MIT-licensed `caicpy` client.
+- `products/all/area`: zone polygons (GeoJSON `Polygon`/`MultiPolygon`, id on the feature or in its properties). A point's zone is found by point-in-polygon; its forecast is the one listing that polygon id (or with that `areaId`).
+
+**Decoding, conservatively.**
+- Danger: level names in any case, digits 1–5, and `noRating`/`noForecast`/empty as "no rating". Anything else stays `Unrecognised` and is shown as given.
+- `aspectElevations`: a code decodes only if it splits into exactly one compass aspect and one band (`n_alp`, `NE-TLN`, `btl sw`). Other codes are kept as `undecoded_locations`. **This format is a guess until an in-season sample confirms it.**
+
+**Per stretch** (`forecast_context`, one entry per zone the stretch's vertices fall in):
+- the zone, issue and expiry times, and `expired`;
+- `bands`: from the stretch's elevation range and `--treeline LOWER,UPPER` (below LOWER = `btl`, above UPPER = `alp`). Without a treeline, or without elevation, all three bands are shown and `bands_from` says why;
+- `danger` for those bands and `highest_danger`;
+- each problem with `listed_here`: `true` if any of the stretch's aspects × bands is listed, `false` if none is and every code decoded, `null` if it cannot be told (flat/no aspect, or undecoded codes).
+
+**Summary** (`summary.forecast`): source and attribution, the notice, day, treeline, zones used, the highest danger along the route, and metres outside every zone.
+
+**API.** `GET /v1/forecast` lists loaded zones (404 if none loaded); `GET /v1/forecast/{zone}` returns one forecast by product, area or polygon id; `POST /v1/route/evaluate` adds the context when forecasts are loaded, with optional `?forecast_day=`.
+
+**Web map.** The route panel shows a "Forecast context" block (zones, expiry, highest danger, source) and one line per class 3–4 stretch (bands, danger, problems listed). Text from forecast files is HTML-escaped.
+
+Checked, 2026-10-06:
+- Unit tests for parsing, decoding, treeline bands, expiry, point-in-polygon and annotation; an API handler test with a synthetic forecast over the test region.
+- On the real Cameron Pass build with a **synthetic** forecast in CAIC's format: `ates route` and `/v1/route/evaluate` give identical context. A south-west below-treeline stretch shows the north/east wind slab as not listed and a problem with an undecoded code as undetermined; a north-facing stretch into near treeline shows both listed.
+- No real CAIC forecast has been parsed yet: it was out of season, and permission is pending.
+
 ## Provenance
 
 GeoTIFF dataset metadata:
@@ -511,7 +553,7 @@ The symptom of either is that `gdalinfo`, QGIS's `crssync` post-install scripts 
 To find the culprit, load every dependency with the real Windows loader. `ldd` on its own can mislead.
 
 Without GDAL at all, on CI or another machine:
-- `cargo test -p ates-core -p ates-io -p ates-pipeline --no-default-features` runs everything except the GDAL tests.
+- `cargo test -p ates-core -p ates-io -p ates-pipeline -p ates-forecast --no-default-features` runs everything except the GDAL tests.
 - `DOCS_RS=1 CARGO_TARGET_DIR=target/docsrs-check cargo clippy --workspace --all-targets` type-checks the GDAL code using prebuilt bindings. It does not link.
 
 ## Data
@@ -541,7 +583,7 @@ Without GDAL at all, on CI or another machine:
 | Region presets | config | bbox, data sources, forest_type, CAIC zone, treeline elevations per zone (TODO) |
 | DEM and forest providers | `ates-io` | 3DEP and TCC, fetched once, cached |
 | Route evaluation | `ates-core::route` (pure) | Densify the polyline at cell spacing, sample classes, aspect and elevation; GeoJSON or GPX in. Evaluate-only first (your decision). |
-| Forecasts | new `ates-forecast` | `ForecastProvider` trait plus a CAIC implementation; recorded fixtures |
+| Forecasts | `ates-forecast` (Increment 9) | `ForecastProvider` trait; `CaicFiles` reads saved files. Tests use synthetic CAIC-shaped data, not recorded CAIC data, until permission. |
 | API | new `ates-api` (axum + tokio + serde_json + tower-http) | `POST /v1/point`, `/v1/area`, `/v1/route/evaluate`; `GET /v1/regions`, `/v1/forecast/{zone}`. Shared serde types are the frontend contract. Every response carries provenance and the disclaimer. |
 
 **CAIC data access** (read-only probes, 2026-10-02):
@@ -549,9 +591,11 @@ Without GDAL at all, on CI or another machine:
 - CAIC's site uses an **undocumented** JSON proxy, `https://avalanche.state.co.us/api-proxy/avid?_api_proxy_uri=/products/all...`:
   - Products of type `avalancheforecast` carry `dangerRatings.days[].{alp,tln,btl}`, `avalancheProblems.days[]` and an `areaId`.
   - `/products/all/area` returns GeoJSON MultiPolygons keyed by id.
-- **No published API or terms.** Ask CAIC for permission before relying on it.
-  - Send an identifying User-Agent and cache responses.
-  - Never present forecast data as our own.
+- **No published API, and no key is needed:** the endpoints answer plain GET requests (checked 2026-10-06).
+- **But the terms of use forbid automated access without permission.** <https://avalanche.state.co.us/terms-use> (read 2026-10-06): "Use of computerized 'robots' or 'data mining' of the information and images presented here is prohibited", and CAIC material "may not be reproduced, in whole or in part, without the prior written permission of CAIC". So:
+  - **Ask CAIC for written permission** (via their Contact page) before any automated fetching or showing their forecasts to other people.
+  - Until then, forecast files are saved by hand for personal testing only, and are never committed (tests use synthetic, CAIC-shaped data).
+  - With permission: send an identifying User-Agent, cache responses, attribute CAIC and link to the full forecast, and never present forecast data as our own.
 - The problem schema (aspect/elevation codes) still needs a captured in-season sample. It was empty in October.
 
 **Wording rule:** outputs say "lower modeled exposure" and "forecast context", never "safe".
@@ -571,7 +615,10 @@ Without GDAL at all, on CI or another machine:
   - The `pcc` forest function has not been checked against USFS canopy cover.
 - `bav` and `sen2ccc` PRA can't be verified against AutoATES, because the upstream script fails for both.
 - Decide whether to add `tracing-subscriber`, which is off the candidate list.
-- Treeline elevations per CAIC zone, needed for forecast context.
+- Treeline elevations per CAIC zone, needed for forecast context, with a citation. Until then `--treeline` is a command-line value, and without it every band is shown.
+- **(Owner) Ask CAIC for written permission** to fetch and display its forecasts. With it: add a fetching `ForecastProvider` (needs an HTTP client crate, to approve) with caching and an identifying User-Agent.
+- In season: save one real `products/all` and check the `aspectElevations` code format and the danger values against `ates_forecast::caic` (unrecognised values are reported, never guessed).
+- Find the CAIC area id covering Cameron Pass, and set `site.caic_zone`.
 - Test GPX and GeoJSON upload in the web map, in a browser.
 
 ## Milestones and increments
@@ -585,4 +632,5 @@ Without GDAL at all, on CI or another machine:
 7. **Route evaluation** — done (Increment 6). `ates route` gives GPX or GeoJSON in, a terminal summary, and a GeoJSON report out.
 8. **HTTP API** — done (Increment 7). `ates-api` serves regions, points, areas, route evaluation and the COGs.
 9. **Frontend MVP** — done (Increment 8). PMTiles WebP overlay, point popups, route drawing and upload.
-10. Next: CAIC forecast context (Increment 9) and scaling beyond one window (10).
+10. **Forecast context** — done offline (Increment 9). `ates-forecast` adds CAIC danger and problem context to route reports, the CLI, the API and the map, from saved files. Live fetching waits for CAIC's permission; the problem-code format waits for an in-season sample.
+11. Next: scaling beyond one window (Increment 10).

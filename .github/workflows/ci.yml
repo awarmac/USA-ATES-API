@@ -35,4 +35,4 @@ jobs:
         run: cargo test --workspace
 
       - name: Test without GDAL feature
-        run: cargo test -p ates-core -p ates-io -p ates-pipeline --no-default-features
+        run: cargo test -p ates-core -p ates-io -p ates-pipeline -p ates-forecast --no-default-features

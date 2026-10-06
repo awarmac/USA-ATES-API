@@ -155,11 +155,27 @@ button.secondary {
   background: #fff;
   color: var(--text);
   border: 1px solid #ddd;
+  flex-wrap: wrap;
+}
+
+/* Forecast context under a stretch takes its own line. */
+.stretch .fine {
+  flex-basis: 100%;
 }
 
 .fine {
   color: var(--muted);
   font-size: 12px;
+}
+
+.forecast {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #ddd;
+}
+
+.warn {
+  color: #b00020;
 }
 
 .popup table {

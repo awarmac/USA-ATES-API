@@ -1,0 +1,16 @@
+[package]
+name = "ates-forecast"
+description = "Avalanche forecast context (CAIC) for ATES route reports; never re-weights a route."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ates-core.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -20,8 +20,10 @@ import {
   getPoint,
   getRegions,
   type PointResponse,
+  type ForecastSummary,
   type RegionInfo,
   type RouteReport,
+  type StretchForecast,
 } from "./api";
 
 interface LegendEntry {
@@ -70,6 +72,46 @@ function rgb([r, g, b]: number[]): string {
 
 function fmt(v: number | null | undefined, digits = 0, unit = ""): string {
   return v === null || v === undefined ? "–" : `${v.toFixed(digits)}${unit}`;
+}
+
+/** Escape text from forecast files before it goes into HTML. */
+function esc(v: unknown): string {
+  return String(v ?? "").replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+}
+
+/** The route-wide forecast block: source, zones, highest danger. */
+function forecastSummaryHtml(f: ForecastSummary): string {
+  const zones = f.zones
+    .map(
+      (z) =>
+        `<div>${esc(z.title ?? z.area_id)}: issued ${esc(z.issued ?? "–")}, expires ${esc(z.expires ?? "–")}` +
+        `${z.expired ? ' <strong class="warn">EXPIRED</strong>' : ""}</div>`,
+    )
+    .join("");
+  return `<div class="forecast">
+    <h3>Forecast context</h3>
+    ${zones || "<div>The route is outside every loaded forecast zone.</div>"}
+    ${f.highest_danger ? `<div>Highest danger along the route: <strong>${esc(f.highest_danger.name)}</strong></div>` : ""}
+    ${f.no_zone_m > 0 ? `<div>Outside every zone: ${(f.no_zone_m / 1000).toFixed(2)} km</div>` : ""}
+    ${f.treeline_m ? "" : "<div>No treeline set: each stretch shows every elevation band.</div>"}
+    <p class="fine">${esc(f.notice)} Source: <a href="${esc(f.source.url)}" target="_blank" rel="noopener">${esc(f.source.name)}</a>.</p>
+  </div>`;
+}
+
+/** One line of forecast context for a stretch. */
+function stretchForecastHtml(c: StretchForecast): string {
+  if (!c.danger) return `<div class="fine">${esc(c.note ?? "No forecast for this day.")}</div>`;
+  const listed = (c.problems ?? []).filter((p) => p.listed_here === true).map((p) => esc(p.type));
+  const unclear = (c.problems ?? []).filter((p) => p.listed_here === null).length;
+  return (
+    `<div class="fine">${c.bands.map((b) => b.toUpperCase()).join("/")} · ` +
+    `danger ${esc(c.highest_danger?.name ?? "not rated")} · ` +
+    `problems here: ${listed.length ? listed.join(", ") : "none listed"}` +
+    `${unclear ? ` (${unclear} undetermined)` : ""}${c.expired ? ' · <strong class="warn">expired</strong>' : ""}</div>`
+  );
 }
 
 // ---------------------------------------------------------------- regions
@@ -257,7 +299,8 @@ function showReport(rep: RouteReport): void {
     ${s.outside_region_m > 0 ? `<div>Outside the region: ${km(s.outside_region_m)} km</div>` : ""}
     <p>In modeled release areas: ${s.release_area_m.toFixed(0)} m<br>
        On modeled avalanche paths: ${s.avalanche_path_m.toFixed(0)} m</p>
-    <p class="fine">${s.disclaimer} Check the current avalanche forecast.</p>`;
+    <p class="fine">${s.disclaimer} Check the current avalanche forecast.</p>
+    ${s.forecast ? forecastSummaryHtml(s.forecast) : ""}`;
 
   const list = $("stretches");
   const exposed = rep.features.filter((f) => (f.properties.ates_class ?? 0) >= 3);
@@ -270,7 +313,8 @@ function showReport(rep: RouteReport): void {
       `<span class="swatch" style="background:${classColors[p.ates_class ?? 0]}"></span>` +
       `${(p.start_m / 1000).toFixed(2)}–${(p.end_m / 1000).toFixed(2)} km · ${p.ates_class_name} · ` +
       `${p.length_m.toFixed(0)} m · ${p.dominant_aspect ?? "flat"} · ` +
-      `${fmt(p.elevation_min_m)}–${fmt(p.elevation_max_m, 0, " m")}`;
+      `${fmt(p.elevation_min_m)}–${fmt(p.elevation_max_m, 0, " m")}` +
+      (p.forecast_context ?? []).map(stretchForecastHtml).join("");
     item.onclick = () => {
       const b = new maplibregl.LngLatBounds();
       for (const c of f.geometry.coordinates) b.extend(c);
